@@ -206,6 +206,11 @@ def main() -> int:
         log = open(data_dir() / "winmeh.log", "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stdout or log
         sys.stderr = sys.stderr or log
+    for stream in (sys.stdout, sys.stderr):           # Windows consoles default to cp1252: emoji would crash print()
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(prog="winmeh")
     ap.add_argument("--ask", help="answer one question in the terminal")
     ap.add_argument("--no-llm", action="store_true")
