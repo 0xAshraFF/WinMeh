@@ -67,7 +67,31 @@ def targets() -> list[CacheTarget]:
         t.append(CacheTarget("firefox", "Firefox cache", ff, note="close Firefox first", running_app="firefox.exe"))
     if IS_WINDOWS:
         t.append(CacheTarget("dns", "DNS cache", [], note="flushed with ipconfig /flushdns"))
+    else:
+        t += linux_targets()
     return [x for x in t if x.paths or x.key == "dns"]
+
+
+def linux_targets() -> list[CacheTarget]:
+    c = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    t = [CacheTarget("thumbs", "Thumbnail cache", [p for p in [os.path.join(c, "thumbnails")] if os.path.isdir(p)],
+                     note="rebuilt automatically")]
+    for key, label, sub, exe in [("chrome", "Chrome cache", "google-chrome", "chrome"),
+                                 ("chromium", "Chromium cache", "chromium", "chromium"),
+                                 ("brave", "Brave cache", "BraveSoftware/Brave-Browser", "brave"),
+                                 ("edge", "Edge cache", "microsoft-edge", "msedge")]:
+        dirs = [d for d in glob.glob(os.path.join(c, sub, "*", "Cache")) + glob.glob(os.path.join(c, sub, "*", "Code Cache"))
+                if os.path.isdir(d)]
+        if dirs:
+            t.append(CacheTarget(key, label, dirs, note="close the browser first", running_app=exe))
+    ff = glob.glob(os.path.join(c, "mozilla", "firefox", "*", "cache2"))
+    if ff:
+        t.append(CacheTarget("firefox", "Firefox cache", ff, note="close Firefox first", running_app="firefox"))
+    for key, label, sub in [("pip", "pip download cache", "pip"), ("npm", "npm cache", os.path.join("..", ".npm", "_cacache"))]:
+        p = os.path.normpath(os.path.join(c, sub))
+        if os.path.isdir(p):
+            t.append(CacheTarget(key, label, [p], note="re-downloaded when needed"))
+    return t
 
 
 def _size_of(path: str) -> tuple[int, int]:
@@ -95,20 +119,14 @@ def scan() -> list[CacheTarget]:
             s, n = _size_of(p)
             t.size += s
             t.files += n
-        if t.running_app and t.running_app.lower() in running:
+        if t.running_app and (t.running_app.lower() in running or t.running_app.lower() + ".exe" in running):
             t.extra.append(f"{t.running_app} is running - its locked files will be skipped")
     return found
 
 
 def running_processes() -> set[str]:
-    if not IS_WINDOWS:
-        return set()
-    try:
-        out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True, timeout=5,
-                             creationflags=0x08000000).stdout
-    except (OSError, subprocess.SubprocessError):
-        return set()
-    return {line.split('","')[0].strip('"').lower() for line in out.splitlines() if line}
+    from .proc import running
+    return running()
 
 
 def clear_path(path: str) -> tuple[int, int]:

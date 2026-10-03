@@ -26,7 +26,9 @@ class STT:
     def load(self) -> bool:
         try:
             from faster_whisper import WhisperModel
-            self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8",
+
+            from ..core.bootstrap import whisper_model
+            self.model = WhisperModel(whisper_model(self.model_size), device="cpu", compute_type="int8",
                                       cpu_threads=0, download_root=None)
             # warm-up so the first real command doesn't pay graph-init cost
             import numpy as np

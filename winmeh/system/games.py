@@ -61,7 +61,9 @@ def steam_root() -> str | None:
         reg.get_value(reg.HKLM, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath")
     if p and os.path.isdir(p):
         return os.path.normpath(p)
-    for c in (r"C:\Program Files (x86)\Steam", os.path.expanduser("~/.steam/steam")):
+    for c in (r"C:\Program Files (x86)\Steam", os.path.expanduser("~/.steam/steam"),
+              os.path.expanduser("~/.local/share/Steam"),
+              os.path.expanduser("~/.var/app/com.valvesoftware.Steam/.local/share/Steam")):
         if os.path.isdir(c):
             return c
     return None

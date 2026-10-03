@@ -47,6 +47,7 @@ class Settings:
     llm_gguf: str = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
     llm_max_tokens: int = 256
     llm_threads: int = 0              # 0 = auto
+    auto_download: bool = True        # first run: fetch the chat model + engine if nothing is bundled/installed
 
     # --- voice ---
     stt_model: str = "tiny.en"        # faster-whisper size: tiny.en | base.en | small.en

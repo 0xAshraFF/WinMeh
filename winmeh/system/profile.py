@@ -7,9 +7,11 @@ refreshed in the background.
 from __future__ import annotations
 
 import ctypes
+import glob
 import json
 import os
 import platform
+import re
 import shutil
 import string
 import sys
@@ -70,24 +72,59 @@ def _os_name() -> str:
         if str(build).isdigit() and int(build) >= 22000:
             product = str(product).replace("Windows 10", "Windows 11")
         return f"{product} {display} (build {build})".strip()
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("PRETTY_NAME="):
+                return line.split("=", 1)[1].strip('"') + f" (kernel {platform.release()})"
+    except OSError:
+        pass
     return f"{platform.system()} {platform.release()}"
 
 
 def _disks() -> list[dict]:
-    roots = [f"{c}:\\" for c in string.ascii_uppercase] if IS_WINDOWS else ["/"]
-    disks = []
+    roots = [f"{c}:\\" for c in string.ascii_uppercase] if IS_WINDOWS else ["/", str(Path.home())] + \
+        sorted(glob.glob("/media/*/*") + glob.glob("/run/media/*/*") + glob.glob("/mnt/*"))
+    disks, seen_dev = [], set()
     for r in roots:
         if IS_WINDOWS and not os.path.exists(r):
             continue
         try:
             u = shutil.disk_usage(r)
+            dev = os.stat(r).st_dev
         except OSError:
             continue
+        if dev in seen_dev:          # /home on the same partition as /
+            continue
+        seen_dev.add(dev)
         disks.append({"mount": r, "total_gb": round(u.total / 1024**3, 1), "free_gb": round(u.free / 1024**3, 1)})
     return disks
 
 
+def linux_desktop_apps() -> list[dict]:
+    dirs = ["/usr/share/applications", "/usr/local/share/applications", str(Path.home() / ".local/share/applications"),
+            "/var/lib/flatpak/exports/share/applications", str(Path.home() / ".local/share/flatpak/exports/share/applications"),
+            "/var/lib/snapd/desktop/applications"]
+    apps, seen = [], set()
+    for d in dirs:
+        for f in glob.glob(os.path.join(d, "*.desktop")):
+            name, hidden = None, False
+            try:
+                for line in Path(f).read_text(errors="ignore").splitlines():
+                    if line.startswith("Name=") and name is None:
+                        name = line[5:].strip()
+                    elif line.strip() in ("NoDisplay=true", "Hidden=true"):
+                        hidden = True
+            except OSError:
+                continue
+            if name and not hidden and name not in seen:
+                seen.add(name)
+                apps.append({"name": name, "version": "", "publisher": "", "location": f})
+    return sorted(apps, key=lambda a: a["name"].lower())
+
+
 def installed_apps() -> list[dict]:
+    if not IS_WINDOWS:
+        return linux_desktop_apps()
     seen, apps = set(), []
     for root, path in UNINSTALL_KEYS:
         for sub in reg.subkeys(root, path):
@@ -105,6 +142,16 @@ def installed_apps() -> list[dict]:
 def user_folders() -> dict[str, str]:
     home = Path.home()
     folders = {n: str(home / n) for n in ("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music")}
+    if not IS_WINDOWS:
+        # XDG user dirs: localized names like ~/Bilder, or moved folders
+        try:
+            for line in (home / ".config" / "user-dirs.dirs").read_text().splitlines():
+                m = re.match(r'XDG_(DESKTOP|DOCUMENTS|DOWNLOAD|PICTURES|VIDEOS|MUSIC)_DIR="(.+)"', line)
+                if m:
+                    label = {"DOWNLOAD": "Downloads"}.get(m.group(1), m.group(1).capitalize())
+                    folders[label] = m.group(2).replace("$HOME", str(home))
+        except OSError:
+            pass
     if IS_WINDOWS:
         # Honour folder redirection (e.g. Pictures moved to D:\ or OneDrive).
         shell = reg.values(reg.HKCU, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")

@@ -15,12 +15,35 @@ SVSF_ASYNC, SVSF_PURGE = 1, 2
 
 
 class TTS:
+    """Windows: SAPI. Linux: speech-dispatcher (spd-say) or espeak-ng, if installed."""
+
     def __init__(self):
+        import shutil
         self.enabled = True
-        self.available = IS_WINDOWS
+        self._linux_cmd = None
+        if not IS_WINDOWS:
+            if shutil.which("spd-say"):
+                self._linux_cmd = ["spd-say", "-w"]
+            elif shutil.which("espeak-ng") or shutil.which("espeak"):
+                self._linux_cmd = [shutil.which("espeak-ng") or shutil.which("espeak")]
+        self.available = IS_WINDOWS or self._linux_cmd is not None
         self._q: queue.Queue = queue.Queue()
+        self._proc = None
         if self.available:
-            threading.Thread(target=self._loop, daemon=True, name="tts").start()
+            threading.Thread(target=self._loop if IS_WINDOWS else self._linux_loop, daemon=True, name="tts").start()
+
+    def _linux_loop(self) -> None:
+        import subprocess
+        while True:
+            cmd, text = self._q.get()
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+            if cmd == "say":
+                try:
+                    self._proc = subprocess.Popen(self._linux_cmd + [text], stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.DEVNULL)
+                except OSError:
+                    pass
 
     def say(self, text: str) -> None:
         if self.enabled and self.available and text:

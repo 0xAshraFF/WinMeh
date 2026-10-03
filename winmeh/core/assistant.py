@@ -17,8 +17,8 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..config import Settings, data_dir
-from ..system import apps, cache, files, games, profile
+from ..config import IS_WINDOWS, Settings, data_dir
+from ..system import apps, cache, drivers, files, games, packages, profile, web
 from .router import Intent, route
 
 Emit = Callable[[str, object], None]   # ("html", str) | ("token", str) | ("done", speak_text)
@@ -29,6 +29,8 @@ class Pending:
     description: str
     run: Callable[[], tuple[str, str]]          # -> (html, speak)
     created: float = field(default_factory=time.time)
+    options: list = field(default_factory=list)  # alternatives the user can pick with "1", "2", ...
+    pick: Callable[[int], tuple[str, str]] | None = None
 
 
 def _q(path: str) -> str:
@@ -59,6 +61,10 @@ class Assistant:
         self._shortcuts: dict[str, str] | None = None
         self.memory_path = data_dir() / "memory.json"
         self.memory: list[str] = self._load_memory()
+        self._emit: Emit = lambda kind, payload: None
+
+    def progress(self, h: str) -> None:
+        self._emit("html", h + ' <span class="dim">…</span>')
 
     # ------------------------------------------------------------ background learning
     def learn(self, force: bool = False, on_done: Callable[[str], None] | None = None) -> None:
@@ -101,6 +107,7 @@ class Assistant:
         if intent is None:
             self._chat(emit)
             return
+        self._emit = emit          # lets long skills show progress before their final answer
         try:
             out_html, speak = getattr(self, f"do_{intent.name}")(intent)
         except Exception as e:  # never crash the widget over one skill
@@ -113,7 +120,7 @@ class Assistant:
     def _chat(self, emit: Emit) -> None:
         if self.llm is None or self.llm.status != "ready":
             msg = ("My language model isn't running, so I can only do built-in commands right now "
-                   "(try <i>help</i>). Run <b>setup</b> from the README to download it.")
+                   "(try <i>help</i>). It downloads automatically on first start, or use Ollama.")
             emit("html", msg)
             emit("done", "My language model isn't running yet.")
             return
@@ -136,7 +143,8 @@ class Assistant:
     def do_help(self, _: Intent):
         return ("Try: <i>how much VRAM do I have</i> · <i>where is my wedding photo</i> · <i>clear the cache</i> · "
                 "<i>what games can I run</i> · <i>can I run Elden Ring</i> · <i>stop VLC update message</i> · "
-                "<i>open spotify</i> · <i>remember that…</i> · <i>rescan my pc</i>. Anything else goes to the local AI. "
+                "<i>open spotify</i> · <i>check my drivers</i> · <i>install vlc</i> · <i>google best laptops</i> · "
+                "<i>go to youtube</i> · <i>remember that…</i> · <i>rescan my pc</i>. Anything else goes to the local AI. "
                 "Hold <b>Ctrl+Alt+Space</b> to talk."), "Here's what I can do."
 
     def do_vram(self, _: Intent):
@@ -212,11 +220,17 @@ class Assistant:
 
     def do_open_app(self, intent: Intent):
         name = intent.args.get("app", "")
+        url = web.site_url(name)
+        if url and (name.lower().strip() in web.SITES or "." in name):
+            return self.do_open_site(Intent("open_site", {"site": name}))
         if self._shortcuts is None:
             self._shortcuts = apps.start_menu_shortcuts()
         lnk = apps.find_app(name, self._shortcuts)
         if not lnk:
-            return f"I couldn't find an app called <b>{html.escape(name)}</b>.", f"I couldn't find {name}."
+            if url:
+                return self.do_open_site(Intent("open_site", {"site": name}))
+            return (f"I couldn't find an app called <b>{html.escape(name)}</b>. Want it? Say <i>install {html.escape(name)}</i>.",
+                    f"I couldn't find {name}.")
         apps.open_path(lnk)
         label = os.path.splitext(os.path.basename(lnk))[0]
         return f"Opening <b>{html.escape(label)}</b>.", f"Opening {label}."
@@ -255,7 +269,8 @@ class Assistant:
         head = (f"Your <b>{html.escape(g.get('name', '?'))}</b> ({g.get('vram_gb', 0):g} GB) + {p.get('ram_gb')} GB RAM "
                 f"is a <b>{tier}</b> gaming PC: good for {games.TIER_HINT[tier]}.")
         if not installed:
-            return head + "<br>I didn't find any installed games (Steam, Epic, GOG, Ubisoft, Xbox).", \
+            stores = "Steam, Epic, GOG, Ubisoft, Xbox" if IS_WINDOWS else "Steam"
+            return head + f"<br>I didn't find any installed games ({stores}).", \
                 f"I didn't find installed games, but your PC is good for {games.TIER_HINT[tier]}."
         if self.s.online_lookups:
             self._check_steam(installed[:25], p.get("ram_gb", 0), g.get("vram_gb", 0))
@@ -304,6 +319,107 @@ class Assistant:
                 f"Probably not. {notes[0] if notes else ''}"
         return f"<b>{title}</b>: Steam doesn't list clear numbers.<br>{detail}<br><span class='dim'>{mine}</span>", \
             "Steam doesn't list clear requirements for that one."
+
+    # ------------------------------------------------------------ web
+    def do_web_search(self, intent: Intent):
+        q, where = intent.args.get("q", ""), intent.args.get("where", "")
+        url = web.search_url(q, where)
+        web.open_url(url)
+        site = "YouTube" if "youtube" in where else "Google"
+        return (f'Searching {site} for <b>{html.escape(q)}</b> in your browser. <a href="url:{_q(url)}">open again</a>',
+                f"Searching {site} for {q}.")
+
+    def do_open_site(self, intent: Intent):
+        site = intent.args.get("site", "")
+        url = web.site_url(site)
+        if not url:
+            return self.do_web_search(Intent("web_search", {"q": site}))
+        web.open_url(url)
+        return f'Opening <a href="url:{_q(url)}">{html.escape(url)}</a>', f"Opening {site}."
+
+    # ------------------------------------------------------------ drivers
+    def do_drivers(self, _: Intent):
+        self.progress("Checking your devices and asking " + ("Windows Update" if IS_WINDOWS else "your system")
+                      + " for driver updates (can take up to a minute)")
+        r = drivers.report()
+        parts = []
+        if r.problems:
+            rows = [f"⚠️ <b>{html.escape(p.name)}</b>: {html.escape(p.reason)}" for p in r.problems[:8]]
+            parts.append(f"<b>{len(r.problems)} device(s) with problems:</b><br>" + "<br>".join(rows))
+        else:
+            parts.append("✅ No devices with driver problems.")
+        for g in r.gpu:
+            age = g.age_days
+            when = g.date.strftime("%b %Y") if g.date else "unknown date"
+            line = f"Graphics driver: <b>{html.escape(g.name)}</b> {html.escape(g.version)} ({when})"
+            if age is not None and age > 365 and g.vendor_page:
+                line += f' - over a year old. <a href="url:{_q(g.vendor_page)}">Get the latest from the maker</a>'
+            parts.append(line)
+        if r.updates:
+            rows = [f"• {html.escape(u.title)}" + (f' <span class="dim">{u.size_mb:g} MB</span>' if u.size_mb else "")
+                    for u in r.updates[:8]]
+            parts.append(f"<b>{len(r.updates)} driver update(s) available:</b><br>" + "<br>".join(rows))
+
+            def run():
+                self.progress("Installing driver updates")
+                ok, msg = drivers.install(r)
+                return html.escape(msg), msg
+            self.pending = Pending("install driver updates", run)
+            parts.append(buttons(("Install updates", "confirm"), ("Not now", "cancel")))
+            speak = f"{len(r.updates)} driver updates are available. Say yes to install them."
+        elif r.updates_checked:
+            parts.append("✅ No driver updates waiting.")
+            speak = "Your drivers look fine." if not r.problems else f"{len(r.problems)} devices have problems."
+        else:
+            speak = f"{len(r.problems)} devices have problems." if r.problems else "No device problems found."
+        parts += [f'<span class="dim">{html.escape(n)}</span>' for n in r.notes]
+        if r.problems and not r.updates and IS_WINDOWS:
+            parts.append('<span class="dim">Tip: open Device Manager, right-click the device, choose '
+                         '<i>Update driver</i> or <i>Uninstall device</i> and restart.</span>')
+        return "<br>".join(parts), speak
+
+    # ------------------------------------------------------------ install apps
+    def do_install(self, intent: Intent):
+        name = intent.args.get("pkg", "").strip()
+        if not packages.available_managers():
+            url = web.search_url(f"{name} official download")
+            how = ("winget isn't available - install 'App Installer' from the Microsoft Store." if IS_WINDOWS
+                   else "No package manager I know (flatpak/apt/dnf/pacman) was found.")
+            return (f'{how} <a href="url:{_q(url)}">Search for the official download</a>', how)
+        self.progress(f"Looking up <b>{html.escape(name)}</b>")
+        found = packages.find(name)
+        if not found:
+            url = web.search_url(f"{name} official download")
+            return (f'I couldn\'t find <b>{html.escape(name)}</b> in {", ".join(packages.available_managers())}. '
+                    f'<a href="url:{_q(url)}">Search the web</a>'), f"I couldn't find {name}."
+
+        def installer(p: packages.Package):
+            def run():
+                self.progress(f"Installing <b>{html.escape(p.name)}</b> - this can take a few minutes")
+                ok, msg = packages.install(p)
+                return ("✅ " if ok else "❌ ") + html.escape(msg), msg
+            return run
+
+        top = found[0]
+        self.pending = Pending(f"install {top.name}", installer(top), options=found,
+                               pick=lambda i: installer(found[i])())
+        shown_id = "" if top.id.lower() == top.name.lower() else html.escape(top.id) + " · "
+        label = f"<b>{html.escape(top.name)}</b> <span class='dim'>{shown_id}{top.manager}" \
+                f"{' · ' + html.escape(top.version) if top.version else ''}</span>"
+        out = f"Install {label}?" + buttons(("Install", "confirm"), ("Cancel", "cancel"))
+        if len(found) > 1:
+            alts = "<br>".join(f'<a href="act:{i + 1}">{i + 1}. {html.escape(p.name)}</a> '
+                               f'<span class="dim">{html.escape(p.id)}</span>' for i, p in enumerate(found))
+            out += f"<br><span class='dim'>Not the right one? Pick:</span><br>{alts}"
+        return out, f"Should I install {top.name}?"
+
+    def do_pick(self, intent: Intent):
+        n = int(intent.args.get("n", "1")) - 1
+        p = self.pending
+        if not p or not p.pick or not (0 <= n < len(p.options)):
+            return "There's no list to pick from right now.", "Nothing to pick."
+        self.pending = None
+        return p.pick(n)
 
     def do_confirm(self, _: Intent):
         if not self.pending or time.time() - self.pending.created > 300:

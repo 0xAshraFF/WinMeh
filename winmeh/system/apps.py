@@ -56,11 +56,9 @@ def disable_vlc_update_popup() -> tuple[bool, str]:
     rc = vlcrc_path()
     if not vlc_installed():
         return False, "I couldn't find VLC on this machine."
-    running = False
-    if IS_WINDOWS:
-        out = subprocess.run(["tasklist", "/fi", "imagename eq vlc.exe", "/nh"], capture_output=True, text=True,
-                             creationflags=0x08000000).stdout
-        running = "vlc.exe" in out.lower()
+    from .proc import running as running_procs
+    procs = running_procs()
+    running = "vlc.exe" in procs or "vlc" in procs
     rc.parent.mkdir(parents=True, exist_ok=True)
     original = rc.read_text(encoding="utf-8", errors="ignore") if rc.exists() else ""
     if original:
@@ -77,6 +75,10 @@ def disable_vlc_update_popup() -> tuple[bool, str]:
 
 # ------------------------------------------------------------------ launching
 def start_menu_shortcuts() -> dict[str, str]:
+    """App name (lower-case) -> launchable file: .lnk on Windows, .desktop on Linux."""
+    if not IS_WINDOWS:
+        from .profile import linux_desktop_apps
+        return {a["name"].lower(): a["location"] for a in linux_desktop_apps()}
     roots = [os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
              os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), r"Microsoft\Windows\Start Menu\Programs")]
     out = {}
@@ -102,7 +104,15 @@ def find_app(name: str, shortcuts: dict[str, str]) -> str | None:
 def open_path(path: str) -> None:
     if IS_WINDOWS:
         os.startfile(path)  # type: ignore[attr-defined]
-    elif shutil.which("xdg-open"):
+        return
+    if path.endswith(".desktop"):
+        if shutil.which("gio"):
+            subprocess.Popen(["gio", "launch", path])
+            return
+        if shutil.which("gtk-launch"):
+            subprocess.Popen(["gtk-launch", os.path.basename(path)])
+            return
+    if shutil.which("xdg-open"):
         subprocess.Popen(["xdg-open", path])
 
 
@@ -125,12 +135,28 @@ def _launch_cmd() -> str:
     return f'"{pyw if os.path.exists(pyw) else sys.executable}" -m winmeh'
 
 
+def _linux_autostart_file() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / "winmeh.desktop"
+
+
 def autostart_enabled() -> bool:
+    if not IS_WINDOWS:
+        return _linux_autostart_file().exists()
     from . import reg
     return bool(reg.get_value(reg.HKCU, RUN_KEY, "WinMeh"))
 
 
 def set_autostart(on: bool) -> None:
+    if not IS_WINDOWS:
+        f = _linux_autostart_file()
+        if on:
+            import sys
+            exe = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" -m winmeh'
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(f"[Desktop Entry]\nType=Application\nName=WinMeh\nExec={exe}\nX-GNOME-Autostart-enabled=true\n")
+        elif f.exists():
+            f.unlink()
+        return
     from . import reg
     if on:
         reg.set_value(reg.HKCU, RUN_KEY, "WinMeh", _launch_cmd())

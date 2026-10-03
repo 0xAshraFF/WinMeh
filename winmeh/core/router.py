@@ -20,12 +20,22 @@ _R = lambda p: re.compile(p, re.I)  # noqa: E731
 RULES: list[tuple[str, re.Pattern]] = [
     ("confirm", _R(r"^\s*(yes|yeah|yep|sure|ok(ay)?|do it|go ahead|confirm|proceed|clear (it|them))\s*[.!]*\s*$")),
     ("cancel", _R(r"^\s*(no|nope|cancel|stop|never ?mind|don'?t)\s*[.!]*\s*$")),
+    ("pick", _R(r"^\s*(#|number |option )?(?P<n>[1-5])\s*$")),
     ("help", _R(r"^\s*(help|what can you do|commands)\s*\??\s*$")),
     ("remember", _R(r"^\s*remember (that )?(?P<fact>.+)$")),
     ("vlc_updates", _R(r"\bvlc\b.*\b(update|updates|notif\w*|message|popup|pop-up|prompt|nag)|"
                        r"\b(update|notif\w*|message|popup|pop-up|nag)\b.*\bvlc\b")),
     ("can_run", _R(r"\bcan (i|my (pc|computer|laptop|machine)|this (pc|machine|computer|laptop)|it) "
                    r"(run|play|handle) (?P<game>.+?)\??$")),
+    ("drivers", _R(r"\bdrivers?\b|\bdevice manager\b|\b(device|hardware)s? (not working|problem|issue)")),
+    # web before files: "search the web for X" / "google X" / "search X on youtube"
+    ("web_search", _R(r"^\s*google\s+(?P<q>.+)$|"
+                      r"\b(search|look up|find)\s+(the\s+)?(?P<where>web|internet|online|google|youtube)\s+(for\s+)?(?P<q2>.+)$|"
+                      r"^\s*(search|look up|find)\s+(for\s+)?(?P<q3>.+?)\s+(on|in|at)\s+(the\s+)?(?P<where2>web|internet|google|youtube|online)\s*$|"
+                      r"^\s*look up\s+(?P<q4>.+)$")),
+    ("open_site", _R(r"^\s*(go to|visit|browse( to)?|open (the )?website)\s+(?P<site>.+?)\s*$")),
+    ("install", _R(r"^\s*(please\s+)?(can you\s+)?(install|download|set ?up|reinstall)\s+(the\s+|a\s+)?(?P<pkg>.+?)"
+                   r"(\s+(app|application|program|software|for me|please))*\s*[.!?]*$")),
     ("games", _R(r"\bgames?\b")),
     ("clear_cache", _R(r"\b(clear|clean|delete|empty|wipe|remove|free up|flush)\b.*\b(cache|caches|temp|junk|temporary)\b|"
                        r"\b(cache|temp files?)\b.*\b(clear|clean|delete)")),
@@ -55,6 +65,12 @@ def route(text: str) -> Intent | None:
         # 'open' + a file-ish thing is a file search ("open my wedding photo")
         if name == "open_app" and re.search(r"\b(photo|picture|pic|video|file|document|pdf|folder)s?\b", t, re.I):
             return Intent("find_file", {"q": args.get("app", t)})
+        if name == "web_search":
+            q = next((args[k] for k in ("q", "q2", "q3", "q4") if args.get(k)), t)
+            where = (args.get("where") or args.get("where2") or "").lower()
+            return Intent("web_search", {"q": q, "where": where})
+        if name == "install" and re.search(r"\b(games?|drivers?)\b", args.get("pkg", ""), re.I):
+            continue    # "get me the games list", "download drivers" belong to other rules
         if name == "can_run" and re.search(r"\bgames?\b", args.get("game", ""), re.I):
             return Intent("games", {})
         return Intent(name, args)

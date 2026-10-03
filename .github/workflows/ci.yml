@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -19,44 +21,119 @@ jobs:
           python-version: "3.11"
       - name: Qt runtime libs (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libportaudio2
       - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
         env:
           QT_QPA_PLATFORM: offscreen
-      - name: Self-test on a real Windows machine (profile, VRAM, files, cache scan, games)
-        if: runner.os == 'Windows'
+      - name: Self-test on a real machine (profile, VRAM, files, cache, games, drivers, package lookup)
         run: python -m winmeh --selftest
 
-  build-exe:
+  windows-installer:
     needs: test
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller
-      - name: Build WinMeh.exe
-        run: >
-          pyinstaller --noconfirm --windowed --disable-windowed-traceback --name WinMeh
-          --paths . --collect-submodules winmeh
-          --collect-all faster_whisper --collect-binaries ctranslate2
-          --hidden-import win32com.client --hidden-import pythoncom
-          scripts/winmeh_entry.py
-      - name: Smoke-test the exe (GUI-subsystem exe, so wait for it explicitly)
+      - run: pip install -r requirements.txt pyinstaller huggingface_hub
+      - uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: models-v1-windows
+      - name: Build app + bundle models
+        run: python scripts/build.py --with-models
+      - name: Build installer
         shell: pwsh
-        timeout-minutes: 3
         run: |
-          $p = Start-Process dist\WinMeh\WinMeh.exe -ArgumentList '--ask','"how much ram do i have"','--no-llm' -PassThru
-          $done = $p.WaitForExit(90000)
-          Write-Host "--- winmeh.log"; Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
-          Write-Host "--- crash.log"; Get-Content "$env:LOCALAPPDATA\WinMeh\crash.log" -ErrorAction SilentlyContinue
-          if (-not $done) { Stop-Process -Id $p.Id -Force; Write-Error "exe did not exit within 90 s"; exit 1 }
-          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
-          if (-not (Select-String -Path "$env:LOCALAPPDATA\WinMeh\winmeh.log" -Pattern "GB of RAM" -Quiet)) { Write-Error "no answer in log"; exit 1 }
+          choco install innosetup -y --no-progress | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp installer\winmeh.iss
+          Get-Item dist\WinMeh-Setup.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB)}}
+      - name: Install silently and chat through the bundled model
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          $i = Start-Process dist\WinMeh-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/TASKS=' -PassThru -Wait
+          if ($i.ExitCode -ne 0) { exit $i.ExitCode }
+          $exe = "$env:LOCALAPPDATA\Programs\WinMeh\WinMeh.exe"
+          if (-not (Test-Path $exe)) { Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 1; Write-Error "not installed"; exit 1 }
+          foreach ($q in @('how much ram do i have', 'say hello in five words')) {
+            Remove-Item "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $p = Start-Process $exe -ArgumentList '--ask', "`"$q`"" -PassThru
+            $done = $p.WaitForExit(240000)
+            Write-Host "--- $q  ($([math]::Round($sw.Elapsed.TotalSeconds,1)) s incl. engine start)"
+            Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
+            Get-Content "$env:LOCALAPPDATA\WinMeh\crash.log" -ErrorAction SilentlyContinue
+            if (-not $done) { Stop-Process -Id $p.Id -Force; Write-Error "timed out"; exit 1 }
+            $log = Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -Raw
+            if (-not $log -or $log -match "language model isn't running|LLM error") { Write-Error "no answer"; exit 1 }
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: WinMeh-windows
-          path: dist/WinMeh
+          name: WinMeh-Setup-windows
+          path: dist/WinMeh-Setup.exe
+
+  linux-package:
+    needs: test
+    runs-on: ubuntu-22.04          # older glibc = runs on more distros
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libportaudio2 libxcb-cursor0
+      - run: pip install -r requirements.txt pyinstaller huggingface_hub
+      - uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: models-v1-linux
+      - name: Build app + bundle models
+        run: python scripts/build.py --with-models
+      - name: Chat through the bundled model
+        timeout-minutes: 8
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          srv=$(find dist/WinMeh/models/llama.cpp -name llama-server -type f | head -1)
+          echo "engine: $srv"; ldd "$srv" | grep "not found" || echo "all engine libraries resolved"
+          dist/WinMeh/WinMeh --ask "how much ram do i have"
+          out=$(timeout 240 dist/WinMeh/WinMeh --ask "say hello in five words")
+          echo "$out"
+          if [ -z "$out" ] || echo "$out" | grep -qE "language model isn't running|LLM error"; then exit 1; fi
+      - name: Package
+        run: |
+          cp installer/install.sh installer/winmeh.png dist/
+          chmod +x dist/install.sh
+          tar -czf WinMeh-linux-x64.tar.gz -C dist WinMeh install.sh winmeh.png
+          ls -lh WinMeh-linux-x64.tar.gz
+      - name: Test the installer script
+        run: |
+          mkdir t && tar -xzf WinMeh-linux-x64.tar.gz -C t
+          HOME=$PWD/home QT_QPA_PLATFORM=offscreen bash t/install.sh
+          test -x home/.local/share/winmeh-app/WinMeh && test -f home/.local/share/applications/winmeh.desktop
+          HOME=$PWD/home bash t/install.sh --uninstall
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinMeh-linux-x64
+          path: WinMeh-linux-x64.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows-installer, linux-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/WinMeh-Setup.exe
+            out/WinMeh-linux-x64.tar.gz

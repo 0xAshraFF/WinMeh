@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Iterator
 
-from ..config import IS_WINDOWS, Settings, models_dir
+from ..config import IS_WINDOWS, Settings
 
 FALLBACK_URLS = ["http://127.0.0.1:11434/v1", "http://127.0.0.1:1234/v1"]   # Ollama, LM Studio
 
@@ -33,11 +33,8 @@ def _port_open(url: str, timeout: float = 0.25) -> bool:
 
 
 def llama_server_exe() -> Path | None:
-    name = "llama-server.exe" if IS_WINDOWS else "llama-server"
-    for p in (models_dir() / "llama.cpp" / name, *models_dir().glob(f"llama.cpp/**/{name}")):
-        if p.exists():
-            return p
-    return None
+    from .bootstrap import find_llama_server
+    return find_llama_server()
 
 
 class LLM:
@@ -49,21 +46,33 @@ class LLM:
         self.status = "starting"
 
     # ------------------------------------------------------------ lifecycle
-    def ensure(self) -> bool:
-        """Find or start a server. Returns True if one is reachable."""
+    def ensure(self, progress=None) -> bool:
+        """Find or start a server; on first run download the model + engine. True if one is reachable."""
         if _port_open(self.url):
             self.status = "ready"
             return True
         if self.s.llm_autostart and self._spawn():
             return True
+        if self._try_fallbacks():
+            return True
+        if self.s.llm_autostart and self.s.auto_download and progress is not None:
+            from .bootstrap import ensure_llm
+            if ensure_llm(self.s.llm_gguf, progress) and self._spawn():
+                return True
+        self.status = "offline"
+        return False
+
+    def _try_fallbacks(self) -> bool:
         for alt in FALLBACK_URLS:
             if _port_open(alt):
                 self.url = alt
                 if "11434" in alt:
-                    self.model = self._first_ollama_model() or self.model
+                    m = self._first_ollama_model()
+                    if not m:            # Ollama running but no model pulled yet
+                        continue
+                    self.model = m
                 self.status = "ready"
                 return True
-        self.status = "offline"
         return False
 
     def _first_ollama_model(self) -> str | None:
@@ -76,9 +85,10 @@ class LLM:
         return small[0] if small else None
 
     def _spawn(self) -> bool:
+        from .bootstrap import find_gguf
         exe = llama_server_exe()
-        gguf = models_dir() / self.s.llm_gguf
-        if not exe or not gguf.exists():
+        gguf = find_gguf(self.s.llm_gguf)
+        if not exe or not gguf:
             return False
         port = urllib.parse.urlparse(self.url).port or 8765
         threads = self.s.llm_threads or max(2, (os.cpu_count() or 4) // 2)
@@ -91,7 +101,7 @@ class LLM:
         except OSError:
             return False
         import time
-        for _ in range(120):                                          # model load: usually < 3 s
+        for _ in range(600):                                          # model load: ~2 s on SSD, can be 30 s+ on old HDDs
             if self.proc.poll() is not None:
                 # some older builds don't know --no-webui: retry without it once
                 if "--no-webui" in cmd:

@@ -10,6 +10,9 @@ is wrong for most modern cards. We read, in order of accuracy:
 
 from __future__ import annotations
 
+import glob
+import os
+import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
@@ -37,7 +40,9 @@ class GPU:
     @property
     def is_integrated(self) -> bool:
         n = self.name.lower()
-        return ("intel" in n and "arc" not in n) or "radeon(tm) graphics" in n or n.endswith("radeon graphics")
+        return (("intel" in n and "arc" not in n) or "radeon(tm) graphics" in n or n.endswith("radeon graphics")
+                or "uhd graphics" in n or "iris" in n or "renoir" in n or "cezanne" in n or "rembrandt" in n
+                or "phoenix" in n or "vega 8" in n or "lucienne" in n)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -96,8 +101,49 @@ def from_registry() -> list[GPU]:
     return gpus
 
 
+def parse_lspci_gpus(text: str) -> list[str]:
+    """Names of display controllers from `lspci` output."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^\S+\s+(VGA compatible controller|3D controller|Display controller):\s*(.+)$", line)
+        if m:
+            out.append(re.sub(r"\s*\(rev [0-9a-f]+\)$", "", m.group(2)).strip())
+    return out
+
+
+def from_linux(sys_root: str = "/sys/class/drm") -> list[GPU]:
+    """AMD/Intel VRAM from sysfs (amdgpu exposes mem_info_vram_total); names from lspci."""
+    names: list[str] = []
+    if shutil.which("lspci"):
+        try:
+            names = parse_lspci_gpus(subprocess.run(["lspci"], capture_output=True, text=True, timeout=5).stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    gpus = []
+    for card in sorted(glob.glob(os.path.join(sys_root, "card[0-9]"))):
+        dev = os.path.join(card, "device")
+        vram = 0
+        try:
+            with open(os.path.join(dev, "mem_info_vram_total")) as f:
+                vram = int(f.read().strip())
+        except (OSError, ValueError):
+            pass
+        vendor = ""
+        try:
+            with open(os.path.join(dev, "vendor")) as f:
+                vendor = {"0x1002": "AMD", "0x10de": "NVIDIA", "0x8086": "Intel"}.get(f.read().strip(), "")
+        except OSError:
+            pass
+        name = next((n for n in names if vendor and vendor.lower() in n.lower()), "") or (f"{vendor} GPU" if vendor else "")
+        if name:
+            gpus.append(GPU(name, vram, "sysfs"))
+    if not gpus:
+        gpus = [GPU(n, 0, "lspci") for n in names]
+    return gpus
+
+
 def detect() -> list[GPU]:
-    reg_gpus = from_registry()
+    reg_gpus = from_registry() if _win() else from_linux()
     nv = from_nvidia_smi()
     # nvidia-smi is exact: replace registry entries for the same card.
     merged = list(nv)

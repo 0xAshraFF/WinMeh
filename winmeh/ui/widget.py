@@ -322,6 +322,9 @@ class Widget(QWidget):
             apps.open_path(path)
         elif scheme == "reveal" and os.path.exists(path):
             apps.reveal(path)
+        elif scheme == "url":
+            from ..system import web
+            web.open_url(path)
         elif scheme == "act":
             self.submit({"confirm": "yes", "cancel": "cancel"}.get(path, path))
 

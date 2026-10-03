@@ -34,7 +34,11 @@ def ask(question: str, use_llm: bool = True) -> str:
         llm.ensure()
     a = Assistant(s, llm)
     out: list[str] = []
-    a.handle(question, lambda k, p: out.append(p if k == "token" else _plain(p) + "\n" if k == "html" else ""))
+    try:
+        a.handle(question, lambda k, p: out.append(p if k == "token" else _plain(p) + "\n" if k == "html" else ""))
+    finally:
+        if llm:
+            llm.close()          # don't leave the llama-server we started running
     return "".join(out).strip()
 
 
@@ -45,6 +49,8 @@ SELFTEST = [
     "how to clear the cache",
     "get me the games list that I can run in this machine",
     "stop the vlc palyer update message",
+    "check my drivers",
+    "install vlc",               # only looks the package up; installing needs a "yes"
 ]
 
 
@@ -67,7 +73,9 @@ def selftest() -> int:
             continue
         out: list[str] = []
         t = time.perf_counter()
-        a.handle(q, lambda k, p: out.append(_plain(p)) if k == "html" else None)
+        out_final: list[str] = []
+        a.handle(q, lambda k, p: out_final.append(_plain(p)) if k == "html" else None)
+        out = out_final[-1:]      # skip "working on it…" progress messages
         ms = (time.perf_counter() - t) * 1000
         text = "\n".join(out).strip()
         print(f"> {q}   [{ms:.0f} ms]\n{text}\n")
@@ -77,7 +85,41 @@ def selftest() -> int:
 
 
 # ------------------------------------------------------------------ GUI
-def run_gui() -> int:
+IPC_NAME = "winmeh-" + (os.environ.get("USERNAME") or os.environ.get("USER") or "user")
+
+
+def send_to_running(command: str) -> bool:
+    from PySide6.QtNetwork import QLocalSocket
+    sock = QLocalSocket()
+    sock.connectToServer(IPC_NAME)
+    if not sock.waitForConnected(1000):
+        return False
+    sock.write(command.encode() + b"\n")
+    sock.waitForBytesWritten(1000)
+    sock.disconnectFromServer()
+    return True
+
+
+def listen_for_commands(app, handlers: dict) -> None:
+    from PySide6.QtNetwork import QLocalServer
+    QLocalServer.removeServer(IPC_NAME)          # stale socket after a crash
+    server = QLocalServer(app)
+
+    def on_conn():
+        sock = server.nextPendingConnection()
+
+        def read():
+            for line in bytes(sock.readAll()).decode(errors="ignore").split():
+                fn = handlers.get(line.strip())
+                if fn:
+                    fn()
+        sock.readyRead.connect(read)
+    server.newConnection.connect(on_conn)
+    server.listen(IPC_NAME)
+    app._ipc = server
+
+
+def run_gui(command: str = "show") -> int:
     from PySide6.QtCore import QLockFile
     from PySide6.QtWidgets import QApplication
 
@@ -99,7 +141,9 @@ def run_gui() -> int:
     app.setQuitOnLastWindowClosed(False)
     lock = QLockFile(str(data_dir() / "winmeh.lock"))
     if not lock.tryLock(100):
-        print("WinMeh is already running.")
+        # Already running: hand the command to that instance (this is how Linux hotkeys work).
+        ok = send_to_running(command)
+        print("Sent to the running WinMeh." if ok else "WinMeh is already running.")
         return 0
 
     s = Settings.load()
@@ -116,15 +160,30 @@ def run_gui() -> int:
         assistant.learn(on_done=lambda m: w.bridge.status.emit("ready"))
         w.bridge.status.emit("loading voice…")
         if not stt.load():
-            w.bridge.notice.emit(f"Voice is off: {stt.error}. Install with: pip install faster-whisper sounddevice")
+            w.bridge.notice.emit(f"Voice is off ({stt.error}). Typing still works.")
         w.bridge.status.emit("loading AI…")
-        if llm.ensure():
+        first_run = {"told": False}
+
+        def progress(msg: str):
+            if not first_run["told"]:
+                first_run["told"] = True
+                w.bridge.notice.emit("First start: downloading the small chat model (~450 MB, one time). "
+                                     "Everything else already works - try asking about your PC.")
+            w.bridge.status.emit(msg)
+        if llm.ensure(progress):
             llm.warm()
+            if first_run["told"]:
+                w.bridge.notice.emit("Chat is ready.")
         else:
-            w.bridge.notice.emit("Local AI isn't running, so free-form chat is off (built-in commands still work). "
-                                 "Run: python scripts/setup_models.py")
+            w.bridge.notice.emit("Chat is offline (no internet for the first download?). Built-in commands still "
+                                 "work; I'll retry next start.")
         w.bridge.status.emit("ready")
     threading.Thread(target=boot, daemon=True, name="boot").start()
+
+    listen_for_commands(app, {"show": w.show_front, "toggle": w.toggle_visible, "talk": w.talk,
+                              "quit": lambda: app.quit()})
+    if command == "talk":
+        w.talk()
 
     hk = Hotkeys()
     hk.add(s.hotkey_talk, w.bridge.talk.emit)
@@ -151,13 +210,17 @@ def main() -> int:
     ap.add_argument("--ask", help="answer one question in the terminal")
     ap.add_argument("--no-llm", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--talk", action="store_true", help="start listening (bind to a desktop shortcut on Linux)")
+    ap.add_argument("--toggle", action="store_true", help="show/hide the widget")
+    ap.add_argument("--quit", action="store_true", help="quit the running instance")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
     if a.ask:
         print(ask(a.ask, use_llm=not a.no_llm))
         return 0
-    return run_gui()
+    command = "talk" if a.talk else "toggle" if a.toggle else "quit" if a.quit else "show"
+    return run_gui(command)
 
 
 if __name__ == "__main__":
