@@ -41,6 +41,7 @@ jobs:
       - name: Build WinMeh.exe
         run: >
           pyinstaller --noconfirm --windowed --disable-windowed-traceback --name WinMeh
+          --paths . --collect-submodules winmeh
           --collect-all faster_whisper --collect-binaries ctranslate2
           --hidden-import win32com.client --hidden-import pythoncom
           scripts/winmeh_entry.py
