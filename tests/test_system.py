@@ -142,3 +142,8 @@ def test_gpu_tier():
     assert games.gpu_tier(12, False) == "enthusiast"
     assert games.gpu_tier(6, False) == "mid"
     assert games.gpu_tier(2, True) == "light"
+
+
+def test_virtual_adapters_are_filtered():
+    assert any(v in "microsoft hyper-v video" for v in gpu.VIRTUAL_ADAPTERS)
+    assert not any(v in "nvidia geforce rtx 4060 laptop gpu" for v in gpu.VIRTUAL_ADAPTERS)

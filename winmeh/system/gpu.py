@@ -18,6 +18,9 @@ from . import reg
 
 DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 CREATE_NO_WINDOW = 0x08000000
+# Remote-desktop / VM / streaming display drivers: not real graphics cards.
+VIRTUAL_ADAPTERS = ("basic display", "basic render", "virtual", "hyper-v", "remote display", "remotefx",
+                    "vmware svga", "virtualbox", "parsec", "citrix", "spacedesk", "displaylink")
 
 
 @dataclass
@@ -86,7 +89,7 @@ def from_registry() -> list[GPU]:
         name = v.get("DriverDesc") or v.get("HardwareInformation.AdapterString")
         if isinstance(name, bytes):
             name = name.decode("utf-16-le", "ignore").rstrip("\x00")
-        if not name or "basic display" in str(name).lower() or "virtual" in str(name).lower():
+        if not name or any(w in str(name).lower() for w in VIRTUAL_ADAPTERS):
             continue
         mem = _as_int(v.get("HardwareInformation.qwMemorySize")) or _as_int(v.get("HardwareInformation.MemorySize"))
         gpus.append(GPU(str(name), mem, "registry", str(v.get("DriverVersion", ""))))

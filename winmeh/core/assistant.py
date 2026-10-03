@@ -144,9 +144,15 @@ class Assistant:
         if not gpus:
             return "I couldn't detect a graphics card.", "I couldn't detect a graphics card."
         main = gpus[0]
-        lines = [f"<b>{html.escape(g['name'])}</b>: {g['vram_gb']:g} GB"
-                 + (" (shared/integrated)" if g.get("integrated") else " dedicated VRAM") for g in gpus]
-        speak = f"You have {main['vram_gb']:g} gigabytes of VRAM on your {main['name']}."
+
+        def line(g):
+            if not g.get("vram_gb"):
+                return f"<b>{html.escape(g['name'])}</b>: the driver doesn't report its VRAM size"
+            kind = " shared system memory (integrated GPU)" if g.get("integrated") else " dedicated VRAM"
+            return f"<b>{html.escape(g['name'])}</b>: {g['vram_gb']:g} GB{kind}"
+        lines = [line(g) for g in gpus]
+        speak = (f"You have {main['vram_gb']:g} gigabytes of VRAM on your {main['name']}." if main.get("vram_gb")
+                 else f"Your {main['name']} doesn't report its VRAM size.")
         return "<br>".join(lines), speak
 
     def do_ram(self, _: Intent):

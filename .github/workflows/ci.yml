@@ -11,6 +11,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,6 +31,7 @@ jobs:
   build-exe:
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,16 +40,21 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller
       - name: Build WinMeh.exe
         run: >
-          pyinstaller --noconfirm --windowed --name WinMeh
+          pyinstaller --noconfirm --windowed --disable-windowed-traceback --name WinMeh
           --collect-all faster_whisper --collect-binaries ctranslate2
           --hidden-import win32com.client --hidden-import pythoncom
           scripts/winmeh_entry.py
       - name: Smoke-test the exe (GUI-subsystem exe, so wait for it explicitly)
         shell: pwsh
+        timeout-minutes: 3
         run: |
-          $p = Start-Process dist\WinMeh\WinMeh.exe -ArgumentList '--ask','"how much ram do i have"','--no-llm' -Wait -PassThru
-          Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
+          $p = Start-Process dist\WinMeh\WinMeh.exe -ArgumentList '--ask','"how much ram do i have"','--no-llm' -PassThru
+          $done = $p.WaitForExit(90000)
+          Write-Host "--- winmeh.log"; Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
+          Write-Host "--- crash.log"; Get-Content "$env:LOCALAPPDATA\WinMeh\crash.log" -ErrorAction SilentlyContinue
+          if (-not $done) { Stop-Process -Id $p.Id -Force; Write-Error "exe did not exit within 90 s"; exit 1 }
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          if (-not (Select-String -Path "$env:LOCALAPPDATA\WinMeh\winmeh.log" -Pattern "GB of RAM" -Quiet)) { Write-Error "no answer in log"; exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: WinMeh-windows

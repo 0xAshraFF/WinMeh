@@ -61,3 +61,8 @@ def test_chat_without_llm_explains(a):
 def test_remember_persists(a):
     ask(a, "remember that my backup drive is E:")
     assert Assistant(Settings(), None).memory == ["my backup drive is E:"]
+
+
+def test_vram_unknown_is_not_reported_as_zero(a):
+    a.profile["gpus"] = [{"name": "Some GPU", "vram_gb": 0.0, "integrated": False}]
+    assert "doesn't report" in ask(a, "how much vram")["html"]
