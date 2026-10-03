@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Qt runtime libs (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: Self-test on a real Windows machine (profile, VRAM, files, cache scan, games)
+        if: runner.os == 'Windows'
+        run: python -m winmeh --selftest
+
+  build-exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pyinstaller
+      - name: Build WinMeh.exe
+        run: >
+          pyinstaller --noconfirm --windowed --name WinMeh
+          --collect-all faster_whisper --collect-binaries ctranslate2
+          --hidden-import win32com.client --hidden-import pythoncom
+          scripts/winmeh_entry.py
+      - name: Smoke-test the exe (GUI-subsystem exe, so wait for it explicitly)
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\WinMeh\WinMeh.exe -ArgumentList '--ask','"how much ram do i have"','--no-llm' -Wait -PassThru
+          Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinMeh-windows
+          path: dist/WinMeh
