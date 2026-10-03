@@ -45,6 +45,8 @@ jobs:
           key: models-v1-windows
       - name: Build app + bundle models
         run: python scripts/build.py --with-models
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Build installer
         shell: pwsh
         run: |
@@ -93,6 +95,8 @@ jobs:
           key: models-v1-linux
       - name: Build app + bundle models
         run: python scripts/build.py --with-models
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Chat through the bundled model
         timeout-minutes: 8
         env:

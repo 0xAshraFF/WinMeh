@@ -9,6 +9,7 @@ Lookup order for every model file:
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import stat
@@ -27,7 +28,8 @@ GGUF_REPOS = {
     "qwen2.5-0.5b-instruct-q4_k_m.gguf": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     "qwen2.5-1.5b-instruct-q4_k_m.gguf": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
 }
-LLAMA_RELEASE_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+LLAMA_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15"
+GPU_BUILD_WORDS = ("cuda", "cudart", "vulkan", "hip", "rocm", "sycl", "opencl", "kompute", "musa", "openvino", "kleidi")
 SERVER_EXE = "llama-server.exe" if IS_WINDOWS else "llama-server"
 
 
@@ -97,6 +99,14 @@ def pick_asset(assets: list[dict], suffixes: list[str]) -> dict | None:
         for a in assets:
             if a.get("name", "").endswith(suf):
                 return a
+    # Naming changes between llama.cpp releases: fall back to "plain CPU build for this OS/arch".
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+    os_words = ("win",) if IS_WINDOWS else ("ubuntu", "linux") if sys.platform.startswith("linux") else ("macos",)
+    for a in assets:
+        n = a.get("name", "").lower()
+        if (n.endswith((".zip", ".tar.gz")) and any(w in n for w in os_words) and (arch in n or "amd64" in n)
+                and not any(w in n for w in GPU_BUILD_WORDS)):
+            return a
     return None
 
 
@@ -116,12 +126,19 @@ def _extract(archive: Path, out: Path) -> None:
 
 
 def install_llama_server(dest_root: Path, progress: Progress) -> Path | None:
-    rel = json.load(urllib.request.urlopen(urllib.request.Request(LLAMA_RELEASE_API, headers={"User-Agent": "WinMeh"}),
-                                           timeout=30))
-    asset = pick_asset(rel.get("assets", []), llama_asset_suffixes())
+    headers = {"User-Agent": "WinMeh", "Accept": "application/vnd.github+json"}
+    if os.environ.get("GITHUB_TOKEN"):                       # CI: avoid the anonymous rate limit
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    releases = json.load(urllib.request.urlopen(urllib.request.Request(LLAMA_RELEASES_API, headers=headers), timeout=30))
+    asset = None
+    for rel in releases:                                     # newest first; skip ones without binaries
+        asset = pick_asset(rel.get("assets", []), llama_asset_suffixes())
+        if asset:
+            break
     if not asset:
-        progress("no llama.cpp build for this platform in " + rel.get("tag_name", "?") + ": "
-                 + ", ".join(a.get("name", "") for a in rel.get("assets", [])))
+        seen = "; ".join(f"{r.get('tag_name')}: {', '.join(a['name'] for a in r.get('assets', [])[:12])}"
+                         for r in releases[:3])
+        progress("no llama.cpp build for this platform. Recent releases: " + seen)
         return None
     archive = dest_root / asset["name"]
     _download(asset["browser_download_url"], archive, "AI engine", progress)

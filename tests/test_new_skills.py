@@ -130,3 +130,10 @@ def test_install_asks_first_and_offers_alternatives(monkeypatch):
     assert "act:confirm" in out["html"] and "act:2" in out["html"] and installed == []
     a.handle("2", lambda k, p: out.__setitem__(k, p))
     assert installed == ["A.FooLite"] and "Installed Foo Lite" in out["html"]
+
+
+def test_llama_asset_fallback_skips_gpu_builds(monkeypatch):
+    monkeypatch.setattr(bootstrap, "IS_WINDOWS", True)
+    assets = [{"name": "llama-cuda-win-x64-b9000.zip"}, {"name": "llama-win-x64-b9000.zip"}, {"name": "nightly-tag.txt"}]
+    assert bootstrap.pick_asset(assets, ["bin-win-cpu-x64.zip"])["name"] == "llama-win-x64-b9000.zip"
+    assert bootstrap.pick_asset([{"name": "nightly-tag.txt"}], ["bin-win-cpu-x64.zip"]) is None
