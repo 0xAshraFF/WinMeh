@@ -150,8 +150,10 @@ class FileIndex:
         self.indexing = True
         try:
             rows, n = [], 0
+            # Build into a side table and swap at the end, so searches keep working mid-rebuild.
             with self._lock, self._conn() as c:
-                c.execute("DELETE FROM files")
+                c.execute("DROP TABLE IF EXISTS files_new")
+                c.execute("CREATE TABLE files_new (path TEXT PRIMARY KEY, lower TEXT, ext TEXT, mtime REAL)")
                 for root in roots:
                     for path, mtime in _walk(root):
                         # match only below the root, so "C:\\Users\\Wedding Planner Ltd\\" can't match everything
@@ -159,11 +161,13 @@ class FileIndex:
                         rows.append((path, rel, os.path.splitext(path)[1].lower(), mtime))
                         n += 1
                         if len(rows) >= 5000:
-                            c.executemany("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", rows)
+                            c.executemany("INSERT OR REPLACE INTO files_new VALUES (?,?,?,?)", rows)
                             rows.clear()
                         if n >= max_files:
                             break
-                c.executemany("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", rows)
+                c.executemany("INSERT OR REPLACE INTO files_new VALUES (?,?,?,?)", rows)
+                c.execute("DROP TABLE files")
+                c.execute("ALTER TABLE files_new RENAME TO files")
                 c.execute("INSERT OR REPLACE INTO meta VALUES ('built', ?)", (str(time.time()),))
             return n
         finally:

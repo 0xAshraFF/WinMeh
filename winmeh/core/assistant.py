@@ -64,16 +64,20 @@ class Assistant:
     def learn(self, force: bool = False, on_done: Callable[[str], None] | None = None) -> None:
         """Refresh profile, file index and games in a background thread."""
         def work():
-            self.profile = profile.collect()
-            profile.save(self.profile)
-            self._games = None
-            stale = time.time() - self.index.last_built() > 24 * 3600
-            if force or stale or self.index.count() == 0:
-                roots = list(dict.fromkeys(list(self.profile.get("folders", {}).values()) + self.s.extra_search_roots))
-                self.index.build(roots)
-            self.games()
+            try:
+                self.profile = profile.collect()
+                profile.save(self.profile)
+                self._games = None
+                stale = time.time() - self.index.last_built() > 24 * 3600
+                if force or stale or self.index.count() == 0:
+                    roots = list(dict.fromkeys(list(self.profile.get("folders", {}).values()) + self.s.extra_search_roots))
+                    self.index.build(roots)
+                self.games()
+                msg = f"Learned this PC: {self.index.count():,} files indexed, {len(self.games())} games found."
+            except Exception as e:
+                msg = f"Couldn't finish learning this PC: {e}"
             if on_done:
-                on_done(f"Learned this PC: {self.index.count():,} files indexed, {len(self.games())} games found.")
+                on_done(msg)
         threading.Thread(target=work, daemon=True, name="learn").start()
 
     def ensure_profile(self) -> dict:
