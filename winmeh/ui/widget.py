@@ -189,6 +189,10 @@ class Widget(QWidget):
         self.chat.setSpacing(6)
         self.chat.addStretch(1)
         self.scroll.setWidget(chat)
+        # Keep the newest message in view: scroll once the layout has actually grown (a long answer with
+        # buttons at the bottom would otherwise stay cut off above the fold).
+        bar = self.scroll.verticalScrollBar()
+        bar.rangeChanged.connect(lambda _lo, hi: bar.setValue(hi))
         root.addWidget(self.scroll, 1)
 
         row = QHBoxLayout()
