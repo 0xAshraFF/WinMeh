@@ -89,10 +89,13 @@ packages.install = lambda p: (time.sleep(1.5), (True, f"Installed {p.name}."))[1
 class DemoLLM:
     status = "ready"
     replies = {"joke": "Why did the computer go to the doctor? Because it had a virus! 😄 "
-                       "Want another one?"}
+                       "Want another one?",
+               "bios": "I'm not sure. It depends on your computer."}   # the 0.5B model out of its depth
 
     def stream(self, msgs, **kw):
-        for word in self.replies["joke"].split(" "):
+        last = msgs[-1]["content"].lower()
+        reply = self.replies["bios" if "bios" in last else "joke"]
+        for word in reply.split(" "):
             time.sleep(0.09)
             yield word + " "
 
@@ -328,7 +331,20 @@ type_and_send(w, "what is 15% of 80")
 rec.hold(2.5)
 
 clear(w)
-scene("9 · Knows its limits", "“write a cover letter for a nursing job”",
+w.assistant.s.handoff_service = "claude"
+scene("9 · When the small AI can't help", "“is it safe to update my BIOS?”",
+      "The tiny local model tries first. If its answer looks weak (“I'm not sure…”), WinMeh offers to ask "
+      "a bigger AI, and shows the exact text it will send.")
+type_and_send(w, "is it safe to update my bios")
+rec.hold(4)
+click(w, "confirm", "Yes, ask Claude")
+rec.sub = ("With your permission it opens Claude with the question already filled in, so Claude answers in "
+           "your browser. For DeepSeek, or very long text, WinMeh copies the question and tells you to press Ctrl+V.")
+rec.hold(4.5)
+w.assistant.s.handoff_service = "chatgpt"
+
+clear(w)
+scene("10 · Knows its limits", "“write a cover letter for a nursing job”",
       "A 0.2 ms classifier spots that this needs a bigger AI. WinMeh asks first and shows exactly what "
       "will be sent. Your PC details are never included unless you choose to.")
 type_and_send(w, "write a cover letter for a nursing job")
@@ -339,7 +355,7 @@ rec.hold(4)
 
 rec.widget.close()
 w = make_widget(accessible=True)
-scene("10 · For everyone", "Accessibility mode",
+scene("11 · For everyone", "Accessibility mode",
       "Large text, high contrast, slower speech, and simple yes/no buttons that say exactly what will "
       "happen. Kid-safe mode adds SafeSearch and a parent PIN.")
 rec.hold(0.6)

@@ -6,7 +6,7 @@ It sits on your desktop as a draggable glass widget. On install it **indexes** t
 
 Nothing leaves your machine unless you say yes. The only exceptions are the optional Steam requirement lookups and the web searches you ask for.
 
-▶️ **[Watch the 80-second demo](docs/demo.mp4)**. It shows the real WinMeh UI and logic, rendered offscreen with a simulated old PC. Regenerate it with `python scripts/make_demo_video.py`.
+▶️ **[Watch the 90-second demo](docs/demo.mp4)**. It shows the real WinMeh UI and logic, rendered offscreen with a simulated old PC. Regenerate it with `python scripts/make_demo_video.py`.
 
 ![WinMeh widget](docs/screenshot.png) ![Hand-off prompt](docs/handoff.png) ![Accessibility mode](docs/accessible.png)
 <sub>This screenshot was rendered offscreen without the native blur. On Windows 10/11 the panel uses the system acrylic blur, so your wallpaper shows through.</sub>
