@@ -29,6 +29,7 @@ class TTS:
         self.available = IS_WINDOWS or self._linux_cmd is not None
         self._q: queue.Queue = queue.Queue()
         self._proc = None
+        self.slow = False
         if self.available:
             threading.Thread(target=self._loop if IS_WINDOWS else self._linux_loop, daemon=True, name="tts").start()
 
@@ -39,8 +40,9 @@ class TTS:
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
             if cmd == "say":
+                rate = (["-r", "-40"] if "spd-say" in self._linux_cmd[0] else ["-s", "130"]) if self.slow else []
                 try:
-                    self._proc = subprocess.Popen(self._linux_cmd + [text], stdout=subprocess.DEVNULL,
+                    self._proc = subprocess.Popen(self._linux_cmd + rate + [text], stdout=subprocess.DEVNULL,
                                                   stderr=subprocess.DEVNULL)
                 except OSError:
                     pass
@@ -69,6 +71,7 @@ class TTS:
                 if cmd == "stop":
                     voice.Speak("", SVSF_ASYNC | SVSF_PURGE)
                 else:
+                    voice.Rate = -3 if self.slow else 1          # accessibility mode speaks slower
                     voice.Speak(text, SVSF_ASYNC | SVSF_PURGE)   # new reply interrupts old one
             except Exception:
                 pass

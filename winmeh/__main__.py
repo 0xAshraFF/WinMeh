@@ -20,7 +20,7 @@ from .config import IS_WINDOWS, Settings, data_dir
 # ------------------------------------------------------------------ headless modes
 def _plain(h: str) -> str:
     import html
-    h = re.sub(r"<br\s*/?>", "\n", h)
+    h = re.sub(r"<br\s*/?>|</?table[^>]*>", "\n", h)
     return html.unescape(re.sub(r"<[^>]+>", "", h))
 
 
@@ -35,7 +35,7 @@ def ask(question: str, use_llm: bool = True) -> str:
     a = Assistant(s, llm)
     out: list[str] = []
     try:
-        a.handle(question, lambda k, p: out.append(p if k == "token" else _plain(p) + "\n" if k == "html" else ""))
+        a.handle(question, lambda k, p: out.append(p if k == "token" else _plain(p) + "\n" if k in ("html", "extra") else ""))
     finally:
         if llm:
             llm.close()          # don't leave the llama-server we started running
@@ -51,6 +51,7 @@ SELFTEST = [
     "stop the vlc palyer update message",
     "check my drivers",
     "install vlc",               # only looks the package up; installing needs a "yes"
+    "write a cover letter for a nursing job",   # classifier -> offers the online hand-off, sends nothing
 ]
 
 

@@ -10,8 +10,8 @@ import urllib.parse
 from PySide6.QtCore import QObject, QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QScrollArea,
-                               QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 from ..config import IS_WINDOWS, Settings
 from ..system import apps
@@ -43,8 +43,28 @@ QPushButton#flat { background: transparent; border: none; min-width: 24px; min-h
 QPushButton#flat:hover { color: white; background: rgba(255,255,255,.12); border-radius: 12px; }
 """
 
-LINK_CSS = ("<style>a{color:#AFC8FF;text-decoration:none} a.btn{color:#fff;font-weight:600}"
-            " .dim{color:rgba(255,255,255,.55);font-size:11px} .warn{color:#FFD28A;font-size:11px}</style>")
+LINK_CSS_NORMAL = ("<style>a{color:#AFC8FF;text-decoration:none} a.btn{color:#fff;font-weight:600}"
+                   " .dim{color:rgba(255,255,255,.55);font-size:11px} .warn{color:#FFD28A;font-size:11px}"
+                   " .preview{color:#fff;font-family:Consolas,monospace}"
+                   "</style>")
+# Accessibility: big text, pure white on black, yellow underlined links (WCAG AAA contrast).
+LINK_CSS_ACCESSIBLE = ("<style>a{color:#FFE14D;text-decoration:underline} a.btn{color:#FFE14D;font-weight:700;font-size:20px}"
+                       " .dim{color:#FFFFFF;font-size:16px} .warn{color:#FFE14D;font-size:16px} .big{font-size:21px;font-weight:600}"
+                       " .preview{color:#fff;font-size:18px}</style>")
+LINK_CSS = LINK_CSS_NORMAL
+
+QSS_ACCESSIBLE = """
+QWidget { font-size: 19px; color: #FFFFFF; }
+#title { font-size: 20px; }
+#status { color: #FFFFFF; font-size: 15px; }
+QLabel#bubble_user { background: #0B3D91; border: 2px solid #FFFFFF; border-radius: 10px; padding: 10px 13px; }
+QLabel#bubble_bot { background: #000000; border: 2px solid #FFFFFF; border-radius: 10px; padding: 10px 13px; }
+QLineEdit { background: #000000; border: 2px solid #FFFFFF; border-radius: 10px; padding: 9px 12px; }
+QLineEdit:focus { border: 3px solid #FFE14D; }
+QPushButton { background: #000000; border: 2px solid #FFFFFF; min-width: 44px; min-height: 44px; font-size: 20px; }
+QPushButton:focus { border: 3px solid #FFE14D; }
+QPushButton#flat { color: #FFFFFF; min-width: 36px; min-height: 36px; }
+"""
 
 
 def make_icon(size: int = 64) -> QIcon:
@@ -75,6 +95,10 @@ class Bridge(QObject):
     heard = Signal(str)
     level = Signal(float)
     notice = Signal(str)
+    extra = Signal(str)            # an additional bubble after a streamed answer (safety-net offer)
+    clipboard = Signal(str)
+    pin_request = Signal(str, bool)
+    settings_changed = Signal()
     talk = Signal()
     toggle = Signal()
 
@@ -114,12 +138,18 @@ class Widget(QWidget):
         self.setWindowIcon(make_icon())
         self._apply_flags()
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet(QSS)
+        self._pin_answer: str | None = None
+        self._pin_done = threading.Event()
+        self.apply_accessibility(resize=False)
         self.resize(settings.width, settings.height)
-        self.setMinimumSize(300, 360)
         self._build()
         self._wire()
         self._place()
+        # Let the assistant (worker thread) reach the UI thread safely.
+        if hasattr(assistant, "copy_to_clipboard"):
+            assistant.copy_to_clipboard = self.copy_text
+            assistant.ask_pin = self.request_pin
+            assistant.on_settings_changed = self.bridge.settings_changed.emit
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -188,6 +218,10 @@ class Widget(QWidget):
         b.heard.connect(self._on_heard)
         b.level.connect(self._on_level)
         b.notice.connect(lambda t: self.add_bubble(html.escape(t), mine=False))
+        b.extra.connect(lambda h: self.add_bubble(h, mine=False))
+        b.clipboard.connect(lambda t: QApplication.clipboard().setText(t))
+        b.pin_request.connect(self._show_pin_dialog)
+        b.settings_changed.connect(lambda: self.apply_accessibility(resize=True))
         b.talk.connect(self.talk)
         b.toggle.connect(self.toggle_visible)
 
@@ -218,6 +252,11 @@ class Widget(QWidget):
         path = QPainterPath()
         path.addRoundedRect(r, RADIUS, RADIUS)
         a = 0.35 if self.blurred else self.s.opacity
+        if self.s.accessible:            # high contrast: solid black, no see-through background
+            p.fillPath(path, QColor(0, 0, 0))
+            p.setPen(QPen(QColor(255, 255, 255), 2))
+            p.drawPath(path)
+            return
         g = QLinearGradient(0, 0, 0, self.height())
         g.setColorAt(0, QColor(40, 48, 72, int(255 * a)))
         g.setColorAt(1, QColor(18, 20, 34, int(255 * min(1.0, a + 0.1))))
@@ -324,9 +363,48 @@ class Widget(QWidget):
             apps.reveal(path)
         elif scheme == "url":
             from ..system import web
+            if not web.is_known(path):
+                ok = QMessageBox.question(self, "WinMeh", f"{web.host(path) or path} isn't on my list of known sites.\n"
+                                          "Only open it if you trust it. Open it anyway?")
+                if ok != QMessageBox.Yes:
+                    return
             web.open_url(path)
         elif scheme == "act":
-            self.submit({"confirm": "yes", "cancel": "cancel"}.get(path, path))
+            self.submit({"confirm": "yes", "cancel": "cancel", "specs": "yes, include my specs"}.get(path, path))
+
+    # ------------------------------------------------------------ accessibility, clipboard, parent PIN
+    def apply_accessibility(self, resize: bool = True) -> None:
+        global LINK_CSS
+        on = self.s.accessible
+        LINK_CSS = LINK_CSS_ACCESSIBLE if on else LINK_CSS_NORMAL
+        self.setStyleSheet(QSS + (QSS_ACCESSIBLE if on else ""))
+        self.setMinimumSize(420, 560) if on else self.setMinimumSize(300, 360)
+        if resize and on and self.width() < 440:
+            self.resize(460, 680)
+        if self.tts:
+            self.tts.slow = on
+        self.update()
+
+    def copy_text(self, text: str) -> bool:
+        """Called from the worker thread: QClipboard must be touched on the UI thread."""
+        self.bridge.clipboard.emit(text)
+        return True
+
+    def request_pin(self, prompt: str, new: bool = False) -> str | None:
+        """Worker thread: ask for the parent PIN in a dialog on the UI thread and wait for the answer."""
+        self._pin_done.clear()
+        self._pin_answer = None
+        self.bridge.pin_request.emit(prompt, new)
+        self._pin_done.wait(180)
+        return self._pin_answer
+
+    def _show_pin_dialog(self, prompt: str, new: bool) -> None:
+        pin, ok = QInputDialog.getText(self, "WinMeh - parent PIN", prompt, QLineEdit.Password)
+        if ok and new and pin:
+            again, ok = QInputDialog.getText(self, "WinMeh - parent PIN", "Type the same PIN again", QLineEdit.Password)
+            ok = ok and again == pin
+        self._pin_answer = pin if ok and pin else None
+        self._pin_done.set()
 
     # ------------------------------------------------------------ voice
     def talk(self) -> None:
@@ -426,6 +504,25 @@ def make_tray(app: QApplication, w: Widget, on_quit) -> QSystemTrayIcon:
     if IS_WINDOWS:
         add("Start with Windows", apps.set_autostart, True, apps.autostart_enabled())
     add("Re-learn this PC", lambda *_: w.submit("rescan my pc"))
+    menu.addSeparator()
+    add("Accessibility mode (large text)", lambda on: w.submit(f"accessibility {'on' if on else 'off'}"), True,
+        w.s.accessible)
+    add("Kid-safe mode (parent PIN)", lambda on: w.submit(f"kid safe {'on' if on else 'off'}"), True, w.s.kid_safe)
+    ai = menu.addMenu("Bigger AI for hard questions")
+    for key, label in (("auto", "Automatic"), ("chatgpt", "ChatGPT"), ("claude", "Claude"),
+                       ("deepseek", "DeepSeek"), ("claude_code", "Claude Code (can change files)")):
+        a = QAction(label, ai, checkable=True)
+        a.setChecked(w.s.handoff_service == key)
+
+        def pick(_=False, k=key):
+            w.s.handoff_service = k
+            w.s.save()
+            for act in ai.actions():
+                act.setChecked(act.data() == k)
+        a.setData(key)
+        a.triggered.connect(pick)
+        ai.addAction(a)
+    add("Learn from my choices", lambda *_: w.submit("learn from my choices"))
     menu.addSeparator()
     add("Quit", on_quit)
     tray.setContextMenu(menu)

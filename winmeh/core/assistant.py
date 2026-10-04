@@ -11,6 +11,7 @@ import datetime as dt
 import html
 import json
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -19,6 +20,7 @@ from typing import Callable
 
 from ..config import IS_WINDOWS, Settings, data_dir
 from ..system import apps, cache, drivers, files, games, packages, profile, web
+from . import calc, classifier, handoff
 from .router import Intent, route
 
 Emit = Callable[[str, object], None]   # ("html", str) | ("token", str) | ("done", speak_text)
@@ -31,6 +33,8 @@ class Pending:
     created: float = field(default_factory=time.time)
     options: list = field(default_factory=list)  # alternatives the user can pick with "1", "2", ...
     pick: Callable[[int], tuple[str, str]] | None = None
+    on_cancel: Callable[[], tuple[str, str] | None] | None = None   # what "No" does (None return = it streamed)
+    extra: dict = field(default_factory=dict)    # more answers, e.g. {"specs": callable} for "yes, include my specs"
 
 
 def _q(path: str) -> str:
@@ -46,7 +50,17 @@ def link_reveal(path: str, label: str = "show in folder") -> str:
 
 
 def buttons(*pairs: tuple[str, str]) -> str:
-    return "<br>" + " &nbsp; ".join(f'<a class="btn" href="act:{a}">{html.escape(l)}</a>' for l, a in pairs)
+    return "<br>" + " &nbsp;·&nbsp; ".join(f'<a class="btn" href="act:{a}">{html.escape(l)}</a>' for l, a in pairs)
+
+
+WEAK = re.compile(r"\b(i'?m not sure|i don'?t know|i do not know|i cannot|i can'?t (help|answer|do)|"
+                                r"as an ai|i am unable|i'?m unable|no information|not able to)\b", re.I)
+
+
+def looks_weak(reply: str) -> bool:
+    """A local answer that probably didn't help: very short, or the model saying it doesn't know."""
+    r = reply.strip()
+    return len(r) < 15 or bool(WEAK.search(r))
 
 
 class Assistant:
@@ -62,6 +76,34 @@ class Assistant:
         self.memory_path = data_dir() / "memory.json"
         self.memory: list[str] = self._load_memory()
         self._emit: Emit = lambda kind, payload: None
+        self.classifier = classifier.load_default()
+        # The widget replaces these with UI-thread versions; the defaults work headless and in tests.
+        self.copy_to_clipboard: Callable[[str], bool] = handoff.system_copy
+        self.open_url: Callable[[str], bool] = web.open_url
+        self.ask_pin: Callable[[str, bool], str | None] = lambda prompt, new=False: None
+        self.on_settings_changed: Callable[[], None] = lambda: None
+        self._available: dict[str, str] | None = None
+
+    # ------------------------------------------------------------ plain-language confirmations
+    def ask(self, question: str, yes: str, no: str, *more: tuple[str, str], detail: str = "") -> str:
+        """A question with buttons. Accessibility mode: the question in big type, then one big
+        button per line whose label says exactly what happens ("✅ Yes, ask ChatGPT")."""
+        if not self.s.accessible:
+            return question + (f"<br>{detail}" if detail else "") + buttons((yes, "confirm"), *more, (no, "cancel"))
+
+        def plain(label: str, word: str, mark: str) -> str:
+            rest = label[len(word):].lstrip(" ,") if label.lower().startswith(word.lower()) else label
+            return f"{mark} {word}, {rest[0].lower() + rest[1:]}" if rest else f"{mark} {word}"
+        rows = [(plain(yes, "Yes", "✅"), "confirm")] + [(plain(l, "Yes", "✅"), a) for l, a in more] + \
+               [(plain(no, "No", "❌"), "cancel")]
+        links = "".join(f'<br><br><a class="btn" href="act:{a}">{html.escape(l)}</a>' for l, a in rows)
+        return f'<span class="big">{question}</span>' + (f"<br>{detail}" if detail else "") + links
+
+    def _parent_ok(self, what: str) -> bool:
+        """Kid-safe mode: a parent PIN gates installs, hand-offs and unknown links. Otherwise always OK."""
+        if not self.s.kid_safe:
+            return True
+        return self.s.check_pin(self.ask_pin(f"Parent PIN needed to {what}", False))
 
     def progress(self, h: str) -> None:
         self._emit("html", h + ' <span class="dim">…</span>')
@@ -104,21 +146,24 @@ class Assistant:
             return
         self.history.append({"role": "user", "content": text})
         intent = route(text)
-        if intent is None:
-            self._chat(emit)
-            return
         self._emit = emit          # lets long skills show progress before their final answer
         try:
-            out_html, speak = getattr(self, f"do_{intent.name}")(intent)
+            result = self._route_unknown(text, emit) if intent is None else getattr(self, f"do_{intent.name}")(intent)
         except Exception as e:  # never crash the widget over one skill
-            out_html, speak = f"Sorry, that failed: {html.escape(str(e))}", "Sorry, that failed."
+            result = f"Sorry, that failed: {html.escape(str(e))}", "Sorry, that failed."
+        if result is None:         # the skill already streamed its answer
+            return
+        out_html, speak = result
         self.history.append({"role": "assistant", "content": speak or _strip(out_html)})
         emit("html", out_html)
         emit("done", speak)
 
     # ------------------------------------------------------------ LLM fallback
-    def _chat(self, emit: Emit) -> None:
-        if self.llm is None or self.llm.status != "ready":
+    def local_ready(self) -> bool:
+        return self.llm is not None and self.llm.status == "ready"
+
+    def _chat(self, emit: Emit, safety_net: bool = True) -> None:
+        if not self.local_ready():
             msg = ("My language model isn't running, so I can only do built-in commands right now "
                    "(try <i>help</i>). It downloads automatically on first start, or use Ollama.")
             emit("html", msg)
@@ -137,14 +182,113 @@ class Assistant:
             return
         reply = "".join(out).strip()
         self.history.append({"role": "assistant", "content": reply})
+        question = next((m["content"] for m in reversed(self.history) if m["role"] == "user"), "")
+        if safety_net and question and looks_weak(reply):
+            # Safety net: the small model struggled - offer the bigger AI afterwards (still asks first).
+            offer, _ = self._offer_handoff(question, None, weak=True)
+            emit("extra", offer)
         emit("done", reply)
+
+    # ------------------------------------------------------------ "who should handle this?"
+    def _route_unknown(self, text: str, emit: Emit):
+        d = self.classifier.decide(text) if (self.classifier and self.s.smart_routing) else None
+        if d is None or d.action == "local":
+            if self.local_ready():
+                self._chat(emit)
+                return None
+            return self._offer_handoff(text, d, offline=True)
+        if d.label == classifier.WEB:
+            intent = Intent("web_search", {"q": text, "where": ""})
+            if d.action == "act":
+                return self.do_web_search(intent)
+            self.pending = Pending("search the web", lambda: self._chosen(text, d, classifier.WEB, self.do_web_search(intent)),
+                                   on_cancel=lambda: self._answer_locally(text, d))
+            return (self.ask(f"This sounds like it needs fresh information. Search the web for "
+                             f"<b>{html.escape(text)}</b>?", "Search the web", "Answer here"),
+                    "Should I search the web for that?")
+        return self._offer_handoff(text, d)
+
+    def _chosen(self, text: str, d, label: str, result):
+        if d is not None:
+            classifier.log_feedback(text, d.label, label)
+        return result
+
+    def _answer_locally(self, text: str, d):
+        if d is not None:
+            classifier.log_feedback(text, d.label, classifier.LOCAL)
+        if not self.local_ready():
+            return "Okay, I won't send it anywhere.", "Okay."
+        # Drop the offer and the "no" so the model answers the original question, not the word "cancel".
+        while self.history and not (self.history[-1]["role"] == "user" and self.history[-1]["content"] == text):
+            self.history.pop()
+        if not self.history:
+            self.history.append({"role": "user", "content": text})
+        self._chat(self._emit, safety_net=False)
+        return None
+
+    # ------------------------------------------------------------ hand-off to an online AI (always asks)
+    def available_ai(self) -> dict[str, str]:
+        if self._available is None:
+            self._available = handoff.detect()
+        return self._available
+
+    def _offer_handoff(self, query: str, d, offline: bool = False, weak: bool = False, service: str | None = None):
+        svc = handoff.SERVICES[service] if service else handoff.choose(self.s.handoff_service, self.available_ai())
+        text = handoff.compose(query)
+        specs = profile.summary(self.ensure_profile())
+        if weak:
+            head = f"That answer may not be good enough. Want me to ask {svc.name} instead?"
+        elif offline:
+            head = f"My small AI isn't running right now. Want me to ask {svc.name}?"
+        elif d is not None and d.action == "ask":
+            head = f"This might need a bigger AI. Want me to ask {svc.name}?"
+        else:
+            head = f"This needs a bigger AI. Want me to ask {svc.name}?"
+        how = ("It opens in Claude Code, which can change files." if svc.key == "claude_code" else
+               "I'll copy it so you can paste it there." if not svc.query_url else "It opens in your browser.")
+        detail = (f"<span class='dim'>This exact text will be sent - nothing else, not your files or PC "
+                  f"details:</span>{preview_box(text)}<span class='dim'>{how}</span>")
+        more = (("Yes, include my PC specs", "specs"),) if specs else ()
+        self.pending = Pending(
+            f"ask {svc.name}", lambda: self._chosen(query, d, classifier.ONLINE, self._send(svc, text)),
+            on_cancel=lambda: self._answer_locally(query, d) if not weak else ("Okay, I'll leave it there.", "Okay."),
+            extra={"specs": lambda: self._chosen(query, d, classifier.ONLINE,
+                                                 self._send(svc, handoff.compose(query, specs)))} if specs else {})
+        if specs:
+            detail += f"<br><span class='dim'>“Include my PC specs” adds this line: (My computer: {html.escape(specs)})</span>"
+        no = "No, answer here" if self.local_ready() and not weak else "No"
+        return (self.ask(head, f"Yes, ask {svc.name}", no, *more, detail=detail),
+                f"This needs a bigger AI. Should I ask {svc.name}?")
+
+    def _send(self, svc, text: str):
+        if not self._parent_ok(f"ask {svc.name}"):
+            return "That needs the parent PIN, so I didn't send anything.", "I need the parent PIN for that."
+        if svc.key == "claude_code":
+            folder = self.s.handoff_folder or os.path.expanduser("~")
+            self.pending = Pending("open Claude Code", lambda: _say(*handoff.launch_claude_code(text, folder)))
+            return (self.ask(f"⚠️ Claude Code can <b>read and change files</b> in <b>{html.escape(folder)}</b>. "
+                             f"Open it there with your question?", "Open Claude Code in this folder", "Don't open it"),
+                    f"Claude Code can change files in {folder}. Are you sure?")
+        url = handoff.build_url(svc, text)
+        if url:
+            self.open_url(url)
+            return (f"Opened {svc.name} in your browser with your question. If it isn't sent automatically, "
+                    f"press Enter there.", f"I opened {svc.name}.")
+        copied = self.copy_to_clipboard(text)
+        self.open_url(svc.site)
+        if copied:
+            return (f"I copied your question and opened {svc.name}. Click the message box there, press "
+                    f"<b>Ctrl+V</b> to paste, then Enter.", f"I copied your question. Paste it into {svc.name}.")
+        return (f"I opened {svc.name}. I couldn't copy automatically - please copy this text:{preview_box(text)}",
+                f"I opened {svc.name}.")
 
     # ------------------------------------------------------------ skills
     def do_help(self, _: Intent):
         return ("Try: <i>how much VRAM do I have</i> · <i>where is my wedding photo</i> · <i>clear the cache</i> · "
                 "<i>what games can I run</i> · <i>can I run Elden Ring</i> · <i>stop VLC update message</i> · "
                 "<i>open spotify</i> · <i>check my drivers</i> · <i>install vlc</i> · <i>google best laptops</i> · "
-                "<i>go to youtube</i> · <i>remember that…</i> · <i>rescan my pc</i>. Anything else goes to the local AI. "
+                "<i>go to youtube</i> · <i>what is 15% of 80</i> · <i>ask chatgpt …</i> · <i>set my ai to claude</i> · "
+                "<i>accessibility on</i> · <i>kid safe on</i> · <i>remember that…</i> · <i>rescan my pc</i>. Anything else goes to the local AI. "
                 "Hold <b>Ctrl+Alt+Space</b> to talk."), "Here's what I can do."
 
     def do_vram(self, _: Intent):
@@ -256,9 +400,9 @@ class Assistant:
             return msg, f"Done. I freed {cache.human(freed)}."
 
         self.pending = Pending("clear caches", run)
-        html_out = (f"I can safely clear about <b>{cache.human(total)}</b>:<br>" + "<br>".join(rows)
-                    + "<br>Only cache contents are removed; your files, passwords and logins stay."
-                    + buttons(("Clear now", "confirm"), ("Cancel", "cancel")))
+        html_out = self.ask(f"I can safely clear about <b>{cache.human(total)}</b>. Clear it now?", "Clear now", "Cancel",
+                            detail="<br>".join(rows) + "<br>Only cache contents are removed; your files, passwords "
+                                                       "and logins stay.")
         return html_out, f"I found {cache.human(total)} of cache. Say yes to clear it."
 
     def do_games(self, _: Intent):
@@ -323,9 +467,11 @@ class Assistant:
     # ------------------------------------------------------------ web
     def do_web_search(self, intent: Intent):
         q, where = intent.args.get("q", ""), intent.args.get("where", "")
-        url = web.search_url(q, where)
-        web.open_url(url)
-        site = "YouTube" if "youtube" in where else "Google"
+        if self.s.kid_safe and "youtube" in where:      # no URL switch forces YouTube Restricted Mode
+            q, where = f"site:youtube.com {q}", ""
+        url = web.search_url(q, where, safe=self.s.kid_safe)
+        self.open_url(url)
+        site = "YouTube" if "youtube" in where else "Google" + (" (SafeSearch on)" if self.s.kid_safe else "")
         return (f'Searching {site} for <b>{html.escape(q)}</b> in your browser. <a href="url:{_q(url)}">open again</a>',
                 f"Searching {site} for {q}.")
 
@@ -334,7 +480,17 @@ class Assistant:
         url = web.site_url(site)
         if not url:
             return self.do_web_search(Intent("web_search", {"q": site}))
-        web.open_url(url)
+        if not web.is_known(url):
+            def go():
+                if not self._parent_ok(f"open {web.host(url)}"):
+                    return "That needs the parent PIN, so I didn't open it.", "I need the parent PIN."
+                self.open_url(url)
+                return f"Opening {html.escape(url)}", f"Opening {site}."
+            self.pending = Pending(f"open {url}", go)
+            return (self.ask(f"⚠️ <b>{html.escape(web.host(url))}</b> isn't on my list of known sites. Only open it if "
+                             f"you trust it. Open it anyway?", "Open it", "Don't open"),
+                    "I don't know that site. Open it anyway?")
+        self.open_url(url)
         return f'Opening <a href="url:{_q(url)}">{html.escape(url)}</a>', f"Opening {site}."
 
     # ------------------------------------------------------------ drivers
@@ -361,11 +517,13 @@ class Assistant:
             parts.append(f"<b>{len(r.updates)} driver update(s) available:</b><br>" + "<br>".join(rows))
 
             def run():
+                if not self._parent_ok("install driver updates"):
+                    return "That needs the parent PIN, so nothing was installed.", "I need the parent PIN."
                 self.progress("Installing driver updates")
                 ok, msg = drivers.install(r)
                 return html.escape(msg), msg
             self.pending = Pending("install driver updates", run)
-            parts.append(buttons(("Install updates", "confirm"), ("Not now", "cancel")))
+            parts.append(self.ask("Install them now?", "Install updates", "Not now"))
             speak = f"{len(r.updates)} driver updates are available. Say yes to install them."
         elif r.updates_checked:
             parts.append("✅ No driver updates waiting.")
@@ -395,6 +553,8 @@ class Assistant:
 
         def installer(p: packages.Package):
             def run():
+                if not self._parent_ok(f"install {p.name}"):
+                    return "That needs the parent PIN, so nothing was installed.", "I need the parent PIN."
                 self.progress(f"Installing <b>{html.escape(p.name)}</b> - this can take a few minutes")
                 ok, msg = packages.install(p)
                 return ("✅ " if ok else "❌ ") + html.escape(msg), msg
@@ -406,7 +566,8 @@ class Assistant:
         shown_id = "" if top.id.lower() == top.name.lower() else html.escape(top.id) + " · "
         label = f"<b>{html.escape(top.name)}</b> <span class='dim'>{shown_id}{top.manager}" \
                 f"{' · ' + html.escape(top.version) if top.version else ''}</span>"
-        out = f"Install {label}?" + buttons(("Install", "confirm"), ("Cancel", "cancel"))
+        out = self.ask(f"Install {label}?" + (" <span class='dim'>(needs the parent PIN)</span>" if self.s.kid_safe else ""),
+                       "Install", "Cancel")
         if len(found) > 1:
             alts = "<br>".join(f'<a href="act:{i + 1}">{i + 1}. {html.escape(p.name)}</a> '
                                f'<span class="dim">{html.escape(p.id)}</span>' for i, p in enumerate(found))
@@ -429,9 +590,81 @@ class Assistant:
         return p.run()
 
     def do_cancel(self, _: Intent):
-        had = self.pending is not None
+        p, self.pending = self.pending, None
+        if p and p.on_cancel:
+            return p.on_cancel()
+        return ("Cancelled." if p else "Okay."), ("Cancelled." if p else "Okay.")
+
+    def do_confirm_specs(self, _: Intent):
+        p = self.pending
+        if not p or "specs" not in p.extra:
+            return "There's nothing waiting for that.", "Nothing to confirm."
         self.pending = None
-        return ("Cancelled." if had else "Okay."), ("Cancelled." if had else "Okay.")
+        return p.extra["specs"]()
+
+    # ------------------------------------------------------------ calculator
+    def do_calc(self, intent: Intent):
+        expr = intent.args.get("expr", "")
+        try:
+            v = calc.fmt(calc.evaluate(expr))
+        except (ValueError, SyntaxError, ZeroDivisionError, OverflowError) as e:
+            return f"I can't calculate that ({html.escape(str(e) or 'invalid')}).", "I can't calculate that."
+        return f"{html.escape(expr.strip())} = <b>{v}</b>", f"That's {v}."
+
+    # ------------------------------------------------------------ hand-off settings / direct requests
+    def do_ask_ai(self, intent: Intent):
+        q = intent.args.get("q", "").strip()
+        if not q:
+            return "What should I ask?", "What should I ask?"
+        return self._offer_handoff(q, None, service=intent.args["svc"])
+
+    def do_set_ai(self, intent: Intent):
+        svc = intent.args["svc"]
+        self.s.handoff_service = svc
+        self.s.save()
+        name = handoff.SERVICES[svc].name
+        note = ""
+        if svc == "claude_code" and "claude_code" not in self.available_ai():
+            note = " (I can't find the <i>claude</i> command on this PC yet, so I'll use ChatGPT until it's installed.)"
+        return f"Okay - big questions will go to <b>{name}</b>, and I'll still ask you every time.{note}", f"Okay, I'll use {name}."
+
+    def do_retrain(self, _: Intent):
+        self.progress("Learning from your Yes/No choices")
+        model, msg = classifier.retrain_for_user()
+        if model is None:
+            return f"Nothing to learn yet: {html.escape(msg)}.", "Nothing to learn yet."
+        self.classifier = model
+        return f"Done - I {html.escape(msg)}. I'll use that from now on.", "Done, I learned from your choices."
+
+    # ------------------------------------------------------------ accessibility + kid-safe
+    def do_accessibility(self, intent: Intent):
+        self.s.accessible = bool(intent.args.get("on"))
+        self.s.save()
+        self.on_settings_changed()
+        if self.s.accessible:
+            return ("Accessibility mode is on: bigger text, stronger colours, slower speech and simple yes/no "
+                    "questions.", "Accessibility mode is on.")
+        return "Accessibility mode is off.", "Accessibility mode is off."
+
+    def do_kid_safe(self, intent: Intent):
+        on = bool(intent.args.get("on"))
+        if on == self.s.kid_safe:
+            return f"Kid-safe mode is already {'on' if on else 'off'}.", "It's already set."
+        if on:
+            if not self.s.parent_pin:
+                pin = self.ask_pin("Choose a parent PIN (at least 4 digits)", True)
+                if not pin or len(pin) < 4:
+                    return "Kid-safe mode needs a parent PIN of at least 4 digits, so it's still off.", "It's still off."
+                self.s.set_pin(pin)
+        elif not self.s.check_pin(self.ask_pin("Parent PIN to turn kid-safe mode off", False)):
+            return "Wrong or no PIN, so kid-safe mode stays on.", "Kid-safe mode stays on."
+        self.s.kid_safe = on
+        self.s.save()
+        self.on_settings_changed()
+        if on:
+            return ("Kid-safe mode is on: SafeSearch for web searches, and installing apps, asking online AIs or "
+                    "opening unknown links needs the parent PIN.", "Kid-safe mode is on.")
+        return "Kid-safe mode is off.", "Kid-safe mode is off."
 
     def do_remember(self, intent: Intent):
         fact = intent.args.get("fact", "").strip()
@@ -451,6 +684,15 @@ class Assistant:
             return []
 
 
+def preview_box(text: str) -> str:
+    """The exact text to be sent, in a box. A one-cell table, because Qt's rich text doesn't close <div>s reliably."""
+    body = html.escape(text).replace("\n", "<br>")
+    return f'<table width="100%" cellpadding="6" bgcolor="#1c2230"><tr><td class="preview">{body}</td></tr></table>'
+
+
+def _say(ok: bool, msg: str) -> tuple[str, str]:
+    return ("" if ok else "❌ ") + html.escape(msg), msg
+
+
 def _strip(h: str) -> str:
-    import re
     return html.unescape(re.sub(r"<[^>]+>", " ", h)).strip()

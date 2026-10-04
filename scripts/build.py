@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,9 @@ def main() -> int:
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--name", "WinMeh",
            "--paths", str(ROOT), "--collect-submodules", "winmeh",
            "--collect-all", "faster_whisper", "--collect-binaries", "ctranslate2",
+           "--collect-data", "winmeh",                                   # router_model.json
+           "--add-data", f"{ROOT / 'data' / 'router'}{os.pathsep}data/router",   # lets "learn from my choices" retrain
+           "--add-data", f"{ROOT / 'data' / 'router_eval.tsv'}{os.pathsep}data",
            "--icon", str(ROOT / "installer" / "winmeh.ico"),
            "--distpath", str(ROOT / "dist"), "--workpath", str(ROOT / "build"), "--specpath", str(ROOT / "build")]
     if WIN:

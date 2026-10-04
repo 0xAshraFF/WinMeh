@@ -22,6 +22,18 @@ RULES: list[tuple[str, re.Pattern]] = [
     ("cancel", _R(r"^\s*(no|nope|cancel|stop|never ?mind|don'?t)\s*[.!]*\s*$")),
     ("pick", _R(r"^\s*(#|number |option )?(?P<n>[1-5])\s*$")),
     ("help", _R(r"^\s*(help|what can you do|commands)\s*\??\s*$")),
+    ("confirm_specs", _R(r"^\s*yes,?\s+(and\s+)?include\s+(my\s+)?(pc\s+|computer\s+)?(specs|details)\s*[.!]*$")),
+    # settings and hand-off
+    ("set_ai", _R(r"^\s*(set|change|switch)\s+(my\s+)?(big\s+|online\s+|default\s+)?ai\s+to\s+(?P<svc>(?:chatgpt|chat gpt|claude code|claude|deepseek|deep seek))\s*[.!]*$|"
+                  r"^\s*(use|prefer)\s+(?P<svc2>(?:chatgpt|chat gpt|claude code|claude|deepseek|deep seek))\s+for\s+(big|hard|difficult|bigger|online)\s+(questions|tasks|stuff|things)\s*[.!]*$")),
+    ("ask_ai", _R(r"^\s*(please\s+)?ask\s+(?P<svc>(?:chatgpt|chat gpt|claude code|claude|deepseek|deep seek))\s*(to|about|:|,|-)?\s+(?P<q>.+)$")),
+    ("retrain", _R(r"\b(retrain|re-train)\b|\blearn from my (choices|answers|feedback)\b")),
+    ("accessibility", _R(r"\b(turn|switch)\s+(?P<state>on|off)\s+(the\s+)?(accessibility|large text|big text|high contrast)\b|"
+                         r"\b(accessibility|large text|big text|high contrast)(\s+mode)?\s+(?P<state2>on|off)\b")),
+    ("kid_safe", _R(r"\b(turn|switch)\s+(?P<state>on|off)\s+(the\s+)?(kid|kids|child|children)[- ]?(safe|safety|mode)|"
+                    r"\b(kid|kids|child)[- ]?(safe|safety)(\s+mode)?\s+(?P<state2>on|off)\b|\bparental controls?\s+(?P<state3>on|off)\b")),
+    ("calc", _R(r"^\s*(what(?:'s| is)\s+|calculate\s+|compute\s+|how much is\s+)?"
+                r"(?P<expr>[\d.]+\s*(?:%|percent)\s+of\s+[\d.]+|[-+*/x×÷^%().,\d\s]*\d[-+*/x×÷^%().,\d\s]*)\s*[?=]?\s*$")),
     ("remember", _R(r"^\s*remember (that )?(?P<fact>.+)$")),
     ("vlc_updates", _R(r"\bvlc\b.*\b(update|updates|notif\w*|message|popup|pop-up|prompt|nag)|"
                        r"\b(update|notif\w*|message|popup|pop-up|nag)\b.*\bvlc\b")),
@@ -71,6 +83,14 @@ def route(text: str) -> Intent | None:
             return Intent("web_search", {"q": q, "where": where})
         if name == "install" and re.search(r"\b(games?|drivers?)\b", args.get("pkg", ""), re.I):
             continue    # "get me the games list", "download drivers" belong to other rules
+        if name == "calc" and not re.search(r"\d\s*([-+*/x×÷^%]|percent)\s*[\d(]|percent of|% of", args.get("expr", "")):
+            continue    # a bare number isn't a calculation
+        if name in ("accessibility", "kid_safe"):
+            return Intent(name, {"on": (args.get("state") or args.get("state2") or args.get("state3")) == "on"})
+        if name in ("set_ai", "ask_ai"):
+            svc = (args.get("svc") or args.get("svc2") or "").lower().replace(" ", "")
+            svc = {"chatgpt": "chatgpt", "claudecode": "claude_code", "claude": "claude", "deepseek": "deepseek"}[svc]
+            return Intent(name, {"svc": svc, "q": args.get("q", "")})
         if name == "can_run" and re.search(r"\bgames?\b", args.get("game", ""), re.I):
             return Intent("games", {})
         return Intent(name, args)

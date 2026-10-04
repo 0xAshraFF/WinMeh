@@ -1,0 +1,151 @@
+# Hand-written held-out set. NOT generated from scripts/make_router_data.py templates. label<TAB>text
+LOCAL_CHAT	good afternoon friend
+LOCAL_CHAT	how's it going
+LOCAL_CHAT	are you having a good day
+LOCAL_CHAT	my dog just died and i'm upset
+LOCAL_CHAT	whats ur name lol
+LOCAL_CHAT	can we chat for a bit
+LOCAL_CHAT	do you know any knock knock jokes
+LOCAL_CHAT	what is a mammal
+LOCAL_CHAT	what are clouds made of
+LOCAL_CHAT	what does a heart do
+LOCAL_CHAT	why do we need sleep
+LOCAL_CHAT	how many hours are in a day
+LOCAL_CHAT	how many sides does a hexagon have
+LOCAL_CHAT	which city is the capital of greece
+LOCAL_CHAT	who invented the light bulb
+LOCAL_CHAT	what is h2o
+LOCAL_CHAT	how do i make my mouse pointer bigger
+LOCAL_CHAT	how do i open the control panel
+LOCAL_CHAT	how do i find my downloads
+LOCAL_CHAT	where do screenshots go
+LOCAL_CHAT	whats a good name for a goldfish
+LOCAL_CHAT	what is the color of the sun
+LOCAL_CHAT	can you say hello to my grandson
+LOCAL_CHAT	what is the difference between a frog and a toad
+LOCAL_CHAT	why is the ocean salty
+LOCAL_CHAT	what letter comes after k
+LOCAL_CHAT	what is ten minus three
+LOCAL_CHAT	how do i turn the computer off
+LOCAL_CHAT	what is a tablet computer
+LOCAL_CHAT	how do i make a smiley face with the keyboard
+LOCAL_CHAT	i am happy today
+LOCAL_CHAT	thank you so much for helping
+LOCAL_CHAT	tell me a story about a kind bear
+LOCAL_CHAT	whats a fun thing to do on a rainy day
+LOCAL_CHAT	do cats like milk
+LOCAL_CHAT	what is an emoji
+LOCAL_CHAT	how many teeth do adults have
+LOCAL_CHAT	what is the moon made of
+LOCAL_CHAT	can you tell me a nice quote
+LOCAL_CHAT	what does the word gigantic mean
+LOCAL_CHAT	what's the plural of goose
+LOCAL_CHAT	spell the word rhythm
+LOCAL_CHAT	are tomatoes fruit
+LOCAL_CHAT	what is the freezing point of water
+LOCAL_CHAT	who was albert einstein
+LOCAL_CHAT	what is the alphabet
+LOCAL_CHAT	i can't sleep
+LOCAL_CHAT	what is a laptop
+LOCAL_CHAT	bye bye
+LOCAL_CHAT	you are funny
+WEB_SEARCH	is it going to snow in chicago this week
+WEB_SEARCH	what's the temperature outside in dhaka
+WEB_SEARCH	who won yesterday's real madrid match
+WEB_SEARCH	how did the yankees do last night
+WEB_SEARCH	current price of ethereum
+WEB_SEARCH	how much is a ps5 now
+WEB_SEARCH	apple stock today
+WEB_SEARCH	what's happening in the news right now
+WEB_SEARCH	latest updates on the hurricane
+WEB_SEARCH	when is the next iphone event
+WEB_SEARCH	what's the newest version of android
+WEB_SEARCH	did nvidia release new drivers this week
+WEB_SEARCH	any good movies out this weekend
+WEB_SEARCH	cinema times for dune near me
+WEB_SEARCH	closest hospital open right now
+WEB_SEARCH	best pizza place near me
+WEB_SEARCH	is gmail down
+WEB_SEARCH	what time is sunset in london today
+WEB_SEARCH	dollar rate in bangladesh today
+WEB_SEARCH	how much is petrol per liter today
+WEB_SEARCH	results of the general election
+WEB_SEARCH	who is the new prime minister
+WEB_SEARCH	how old is cristiano ronaldo
+WEB_SEARCH	is messi playing today
+WEB_SEARCH	champions league results tonight
+WEB_SEARCH	nba standings
+WEB_SEARCH	release date for stranger things next season
+WEB_SEARCH	when is ramadan this year
+WEB_SEARCH	new laptops released this month
+WEB_SEARCH	cheap flights to dubai in december
+WEB_SEARCH	hotel deals in bali next week
+WEB_SEARCH	is the highway closed today
+WEB_SEARCH	weather forecast for the weekend in paris
+WEB_SEARCH	latest tech news
+WEB_SEARCH	what did elon musk tweet today
+WEB_SEARCH	when does the mall close tonight
+WEB_SEARCH	has the new zelda game come out yet
+WEB_SEARCH	what's the gold rate today
+WEB_SEARCH	live cricket score bangladesh vs india
+WEB_SEARCH	traffic to the airport right now
+WEB_SEARCH	what are the top songs this week
+WEB_SEARCH	upcoming concerts in toronto
+WEB_SEARCH	what's the price of a tesla model y currently
+WEB_SEARCH	what is the latest windows 11 update
+WEB_SEARCH	covid rules for travel this month
+WEB_SEARCH	stock market today
+WEB_SEARCH	did the spacex rocket launch today
+WEB_SEARCH	mortgage rates this week
+WEB_SEARCH	what's the air quality in delhi right now
+WEB_SEARCH	who won the ballon d'or this year
+ONLINE_LLM	compose a heartfelt letter to my daughter on her graduation
+ONLINE_LLM	can you draft my two weeks notice email
+ONLINE_LLM	write a persuasive essay on why school uniforms should be banned
+ONLINE_LLM	pen a toast for my parents' 40th anniversary
+ONLINE_LLM	help me write a grant proposal for a community garden
+ONLINE_LLM	give this paragraph a more confident tone: I think maybe our product could possibly help some customers save a little time
+ONLINE_LLM	condense the following report into five bullet points: Sales in the northern region fell by eight percent while the southern region grew by fifteen percent due to the new distribution partnership and an aggressive pricing strategy.
+ONLINE_LLM	put this into german please: Thank you for your hospitality, we had a wonderful time and hope to visit again next summer.
+ONLINE_LLM	my react component re-renders forever, here is the useEffect code: useEffect(() => { setCount(count + 1) })
+ONLINE_LLM	what's wrong with this: for i in range(10) print(i)
+ONLINE_LLM	ValueError: invalid literal for int() with base 10: 'abc' how to handle this
+ONLINE_LLM	write a bash script that backs up my home folder every night
+ONLINE_LLM	generate a python program to scrape product prices from a website
+ONLINE_LLM	optimize this sql: SELECT * FROM orders WHERE YEAR(created_at) = 2024
+ONLINE_LLM	explain why the dinosaurs went extinct with all the main theories
+ONLINE_LLM	explain why my sourdough bread doesn't rise, consider all possible causes
+ONLINE_LLM	compare living in canada versus australia for a nurse with kids
+ONLINE_LLM	android or iphone for my 70 year old mother, detailed pros and cons please
+ONLINE_LLM	put together a 4 week beginner running program
+ONLINE_LLM	plan my wedding budget for 150 guests
+ONLINE_LLM	create a two week itinerary for southern italy by train
+ONLINE_LLM	work out the integral of 1/(1+x^2) and explain each step
+ONLINE_LLM	solve for x: 5x^2 + 3x - 2 = 0
+ONLINE_LLM	prove by induction that 1+2+...+n = n(n+1)/2
+ONLINE_LLM	what is the expected value of rolling two dice, show your working
+ONLINE_LLM	design a logo concept and brand guidelines for my cafe
+ONLINE_LLM	write chapter one of a fantasy novel about a girl who can talk to rivers
+ONLINE_LLM	help me negotiate my salary, write the script for the call
+ONLINE_LLM	analyze the pros and cons of my business idea: a mobile car wash for apartment complexes
+ONLINE_LLM	review my cover letter and suggest improvements: Dear hiring manager, I want this job because I need money and I am good with people.
+ONLINE_LLM	turn these notes into a professional meeting summary: budget approved, hire 2 devs, launch moved to may, ask legal about contract
+ONLINE_LLM	rewrite my linkedin about section to attract recruiters
+ONLINE_LLM	debug: TypeError: Cannot read properties of undefined (reading 'map')
+ONLINE_LLM	refactor my 300 line python function into smaller pieces
+ONLINE_LLM	convert this c# class to typescript
+ONLINE_LLM	make a detailed lesson plan about the water cycle for 5th graders
+ONLINE_LLM	write test cases for a login page
+ONLINE_LLM	explain in detail how a car engine works
+ONLINE_LLM	give me a step by step guide to start investing with 1000 dollars
+ONLINE_LLM	write a short horror story set in a lighthouse, about 1500 words
+ONLINE_LLM	create a spreadsheet formula that sums sales only for march in column b
+ONLINE_LLM	write a speech for my retirement party
+ONLINE_LLM	help me study for my biology exam with practice questions on cell division
+ONLINE_LLM	draft terms and conditions for my online store
+ONLINE_LLM	explain the causes and consequences of world war 1 in an essay
+ONLINE_LLM	what are the differences between socialism and capitalism, explain thoroughly
+ONLINE_LLM	build me a weekly schedule balancing work, gym and studying
+ONLINE_LLM	create a docker compose file for a node app with postgres
+ONLINE_LLM	write an apology email to a customer whose order was late
+ONLINE_LLM	outline a youtube video script about saving money

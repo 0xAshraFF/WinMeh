@@ -54,8 +54,9 @@ def test_confirm_without_pending(a):
     assert "nothing" in ask(a, "yes")["html"].lower()
 
 
-def test_chat_without_llm_explains(a):
-    assert "language model" in ask(a, "tell me a joke")["html"]
+def test_chat_without_llm_offers_handoff(a):
+    out = ask(a, "tell me a joke")["html"]
+    assert "isn't running" in out and "act:confirm" in out and a.pending is not None
 
 
 def test_remember_persists(a):

@@ -26,6 +26,8 @@ jobs:
       - run: python -m pytest -q
         env:
           QT_QPA_PLATFORM: offscreen
+      - name: Classifier retrains from data/ and still beats 90% on the held-out set
+        run: python scripts/train_classifier.py
       - name: Self-test on a real machine (profile, VRAM, files, cache, games, drivers, package lookup)
         run: python -m winmeh --selftest
 
@@ -61,7 +63,7 @@ jobs:
           if ($i.ExitCode -ne 0) { exit $i.ExitCode }
           $exe = "$env:LOCALAPPDATA\Programs\WinMeh\WinMeh.exe"
           if (-not (Test-Path $exe)) { Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 1; Write-Error "not installed"; exit 1 }
-          foreach ($q in @('how much ram do i have', 'say hello in five words')) {
+          foreach ($q in @('how much ram do i have', 'say hello in five words', 'write a cover letter for a nursing job')) {
             Remove-Item "$env:LOCALAPPDATA\WinMeh\winmeh.log" -ErrorAction SilentlyContinue
             $sw = [Diagnostics.Stopwatch]::StartNew()
             $p = Start-Process $exe -ArgumentList '--ask', "`"$q`"" -PassThru
@@ -72,6 +74,7 @@ jobs:
             if (-not $done) { Stop-Process -Id $p.Id -Force; Write-Error "timed out"; exit 1 }
             $log = Get-Content "$env:LOCALAPPDATA\WinMeh\winmeh.log" -Raw
             if (-not $log -or $log -match "language model isn't running|LLM error") { Write-Error "no answer"; exit 1 }
+            if ($q -like 'write a cover*' -and $log -notmatch 'bigger AI') { Write-Error "classifier weights missing from the build"; exit 1 }
           }
       - uses: actions/upload-artifact@v4
         with:
@@ -108,6 +111,7 @@ jobs:
           out=$(timeout 240 dist/WinMeh/WinMeh --ask "say hello in five words")
           echo "$out"
           if [ -z "$out" ] || echo "$out" | grep -qE "language model isn't running|LLM error"; then exit 1; fi
+          dist/WinMeh/WinMeh --ask "write a cover letter for a nursing job" | tee /dev/stderr | grep -q "bigger AI"
       - name: Package
         run: |
           cp installer/install.sh installer/winmeh.png dist/

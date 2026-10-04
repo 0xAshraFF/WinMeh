@@ -55,9 +55,35 @@ class Settings:
     hotkey_talk: str = "ctrl+alt+space"
     hotkey_toggle: str = "ctrl+alt+w"
 
+    # --- smart routing + online hand-off ---
+    smart_routing: bool = True        # classifier decides local / web / bigger AI when no skill matches
+    handoff_service: str = "auto"     # auto | chatgpt | claude | deepseek | claude_code
+    handoff_folder: str = ""          # Claude Code working folder ("" = home folder)
+
+    # --- accessibility + safety ---
+    accessible: bool = False          # large text, high contrast, slower speech, plain confirmations
+    kid_safe: bool = False            # SafeSearch, parent PIN for installs / hand-offs / unknown links
+    parent_pin: str = ""              # "salt$pbkdf2-hash", never the PIN itself
+
     # --- knowledge ---
     extra_search_roots: list[str] = field(default_factory=list)
     online_lookups: bool = True       # allow Steam store requirement lookups
+
+    def set_pin(self, pin: str) -> None:
+        import hashlib
+        import secrets
+        salt = secrets.token_hex(8)
+        digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 100_000).hex()
+        self.parent_pin = f"{salt}${digest}"
+
+    def check_pin(self, pin: str | None) -> bool:
+        import hashlib
+        import hmac
+        if not self.parent_pin or not pin or "$" not in self.parent_pin:
+            return False
+        salt, digest = self.parent_pin.split("$", 1)
+        test = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 100_000).hex()
+        return hmac.compare_digest(test, digest)
 
     @classmethod
     def path(cls) -> Path:
